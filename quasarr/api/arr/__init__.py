@@ -7,6 +7,7 @@ import xml.sax.saxutils as sax_utils
 from base64 import urlsafe_b64decode
 from datetime import datetime
 from functools import wraps
+from textwrap import dedent
 from urllib.parse import urlparse, parse_qs
 from xml.etree import ElementTree
 
@@ -19,6 +20,142 @@ from quasarr.providers.log import info, debug
 from quasarr.providers.version import get_version
 from quasarr.search import get_search_results
 from quasarr.storage.config import Config
+
+
+NEWZNAB_CATEGORY_NAMES = {
+    "2000": "Movies",
+    "5000": "TV",
+    "7000": "Books",
+}
+
+
+def _expand_category_ids(category_ids):
+    """Return the provided ids plus their top-level Newznab parents."""
+
+    expanded = set()
+
+    for category_id in category_ids:
+        if not category_id:
+            continue
+
+        category_id = str(category_id)
+        expanded.add(category_id)
+
+        try:
+            numeric_id = int(category_id)
+        except (TypeError, ValueError):
+            continue
+
+        parent_id = numeric_id - (numeric_id % 1000)
+        expanded.add(f"{parent_id:0{len(category_id)}d}")
+
+    return expanded
+
+
+def _build_caps_xml(base_url, version, *, last_update=None):
+    normalized = (base_url or "").rstrip("/") or "http://localhost:9696"
+    server_url = f"{normalized}/"
+    image_url = f"{normalized}/static/logo.png"
+    last_update = last_update or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return dedent(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server version="{version}" title="Quasarr" strapline="Maison Energy indexer bridge"
+      email="support@quasarr.app" url="{server_url}"
+      image="{image_url}" />
+  <limits max="100" default="50" />
+  <retention days="0" />
+  <registration available="no" open="no" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+    <tv-search available="yes" supportedParams="imdbid,season,ep" />
+    <movie-search available="yes" supportedParams="imdbid" />
+    <audio-search available="no" supportedParams="q" />
+    <book-search available="no" supportedParams="q" />
+  </searching>
+  <categories>
+    <category id="2000" name="Movies">
+      <subcat id="2010" name="Foreign" />
+    </category>
+    <category id="5000" name="TV">
+      <subcat id="5040" name="HD" />
+      <subcat id="5070" name="Anime" />
+    </category>
+  </categories>
+  <groups>
+    <group id="1" name="maison.energy" description="Maison Energy releases" lastupdate="{last_update}" />
+  </groups>
+  <genres>
+    <genre id="1" categoryid="5000" name="Anime" />
+  </genres>
+  <tags>
+    <tag name="anonymous" description="Uploader is anonymous" />
+    <tag name="trusted" description="Uploader has high reputation" />
+    <tag name="internal" description="Uploader is an internal release group" />
+  </tags>
+</caps>"""
+    ).strip()
+
+
+def _derive_newznab_category(request_from, mode, release_category=None):
+    """Return the Newznab category id/name tuple for a release."""
+    if release_category:
+        category_id = str(release_category)
+        return category_id, NEWZNAB_CATEGORY_NAMES.get(category_id)
+
+    rf = (request_from or "").lower()
+    mode = (mode or "").lower()
+
+    if mode == "movie" or "radarr" in rf:
+        return "2000", NEWZNAB_CATEGORY_NAMES.get("2000")
+    if mode == "tvsearch" or "sonarr" in rf:
+        return "5000", NEWZNAB_CATEGORY_NAMES.get("5000")
+    if mode in {"book", "search"} or "lazylibrarian" in rf:
+        return "7000", NEWZNAB_CATEGORY_NAMES.get("7000")
+    return None, None
+
+
+def _format_newznab_attrs(category_id, imdb_id, size):
+    attrs = []
+    if category_id:
+        attrs.append(f'<newznab:attr name="category" value="{category_id}" />')
+    if imdb_id:
+        imdb_value = imdb_id[2:] if imdb_id.startswith("tt") else imdb_id
+        if imdb_value:
+            attrs.append(f'<newznab:attr name="imdbid" value="{imdb_value}" />')
+    if size:
+        attrs.append(f'<newznab:attr name="size" value="{size}" />')
+    if not attrs:
+        return ""
+    indent = " " * 28
+    return "\n".join(f"{indent}{line}" for line in attrs)
+
+
+def _filter_releases_by_categories(releases, allowed_ids, request_from, mode):
+    """Limit releases to those whose category matches the requested ids."""
+    if not allowed_ids:
+        return releases
+
+    normalized_ids = _expand_category_ids(allowed_ids)
+
+    filtered = []
+    for release in releases:
+        details = release.get("details", {})
+        release_category = details.get("category")
+        if release_category is None:
+            continue
+
+        category_id, _ = _derive_newznab_category(
+            request_from,
+            mode,
+            release_category,
+        )
+
+        if category_id and category_id in normalized_ids:
+            filtered.append(release)
+
+    return filtered
 
 
 def require_api_key(func):
@@ -109,9 +246,9 @@ def setup_arr_routes(app):
                     return {
                         "categories": [
                             "*",
-                            "movies",
-                            "tv",
-                            "docs"
+                            "Movies",
+                            "TV",
+                            "Docs"
                         ]
                     }
                 elif mode == "get_config":
@@ -128,17 +265,17 @@ def setup_arr_routes(app):
                                     "dir": "",
                                 },
                                 {
-                                    "name": "movies",
+                                    "name": "Movies",
                                     "order": 1,
                                     "dir": "",
                                 },
                                 {
-                                    "name": "tv",
+                                    "name": "TV",
                                     "order": 2,
                                     "dir": "",
                                 },
                                 {
-                                    "name": "docs",
+                                    "name": "Docs",
                                     "order": 3,
                                     "dir": "",
                                 },
@@ -254,28 +391,9 @@ def setup_arr_routes(app):
 
                 if mode == 'caps':
                     info(f"Providing indexer capability information to {request_from}")
-                    return '''<?xml version="1.0" encoding="UTF-8"?>
-                                <caps>
-                                  <server 
-                                    version="1.33.7" 
-                                    title="Quasarr" 
-                                    url="https://quasarr.indexer/" 
-                                    email="support@quasarr.indexer" 
-                                  />
-                                  <limits max="9999" default="9999" />
-                                  <registration available="no" open="no" />
-                                  <searching>
-                                    <search available="yes" supportedParams="q" />
-                                    <tv-search available="yes" supportedParams="imdbid,season,ep" />
-                                    <movie-search available="yes" supportedParams="imdbid" />
-                                  </searching>
-                                  <categories>
-                                    <category id="5000" name="TV" />
-                                    <category id="2000" name="Movies" />
-                                    <category id="7000" name="Books">
-                                  </category>
-                                  </categories>
-                                </caps>'''
+                    base_url = shared_state.values.get("internal_address", "http://localhost:9696")
+                    caps_xml = _build_caps_xml(base_url, get_version())
+                    return caps_xml
                 elif mode in ['movie', 'tvsearch', 'book', 'search']:
                     releases = []
 
@@ -329,6 +447,33 @@ def setup_arr_routes(app):
                                     f'Ignoring search request from {request_from} - only imdbid searches are supported')
                                 releases = [{}]  # sonarr expects this but we will not support non-imdbid searches
 
+                    raw_categories = []
+                    if hasattr(request.query, "getall"):
+                        raw_categories.extend(request.query.getall("cat"))
+                    else:
+                        raw = getattr(request.query, "cat", "")
+                        if raw:
+                            raw_categories.append(raw)
+
+                    allowed_categories = set()
+                    for raw in raw_categories:
+                        if not raw:
+                            continue
+                        allowed_categories.update(filter(None, raw.split(",")))
+
+                    if allowed_categories:
+                        before_count = len(releases)
+                        releases = _filter_releases_by_categories(
+                            releases,
+                            allowed_categories,
+                            request_from,
+                            mode,
+                        )
+                        debug(
+                            f"Filtered releases by categories {sorted(allowed_categories)}: "
+                            f"{before_count} -> {len(releases)}"
+                        )
+
                     items = ""
                     for release in releases:
                         release = release.get("details", {})
@@ -336,9 +481,20 @@ def setup_arr_routes(app):
                         # Ensure clean XML output
                         title = sax_utils.escape(release.get("title", ""))
                         source = sax_utils.escape(release.get("source", ""))
+                        imdb_id = release.get("imdb_id")
+                        size = release.get("size", 0)
+                        category_id, category_name = _derive_newznab_category(
+                            request_from,
+                            mode,
+                            release.get("category"),
+                        )
+                        attrs = _format_newznab_attrs(category_id, imdb_id, size)
 
                         if not "lazylibrarian" in request_from.lower():
                             title = f'[{release.get("hostname", "").upper()}] {title}'
+
+                        category_tag = f"<category>{category_name}</category>" if category_name else ""
+                        attrs_block = f"\n{attrs}" if attrs else ""
 
                         items += f'''
                         <item>
@@ -348,10 +504,11 @@ def setup_arr_routes(app):
                             <comments>{source}</comments>
                             <pubDate>{release.get("date", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000"))}</pubDate>
                             <enclosure url="{release.get("link", "")}" length="{release.get("size", 0)}" type="application/x-nzb" />
+                            {category_tag}{attrs_block}
                         </item>'''
 
                     return f'''<?xml version="1.0" encoding="UTF-8"?>
-                                <rss>
+                                <rss xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
                                     <channel>
                                         {items}
                                     </channel>
