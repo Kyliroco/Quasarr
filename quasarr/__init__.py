@@ -10,9 +10,9 @@ import socket
 import sys
 import tempfile
 import time
+from types import ModuleType
+from typing import Optional
 from urllib.parse import urlparse
-
-import requests
 
 from quasarr.api import get_api
 from quasarr.providers import shared_state, version
@@ -22,6 +22,27 @@ from quasarr.storage.config import Config, get_clean_hostnames
 from quasarr.storage.setup import path_config, hostnames_config, hostname_credentials_config, flaresolverr_config, \
     jdownloader_config
 from quasarr.storage.sqlite_database import DataBase
+
+
+_REQUESTS: Optional[ModuleType] = None
+
+
+def _get_requests() -> ModuleType:
+    global _REQUESTS
+
+    if _REQUESTS is not None:
+        return _REQUESTS
+
+    try:
+        import requests  # type: ignore[import-not-found]
+    except ModuleNotFoundError as exc:  # pragma: no cover - exercised in build environments
+        raise RuntimeError(
+            "The optional 'requests' dependency is required to fetch hostnames. "
+            "Install Quasarr with its standard extras or add 'requests' to the environment."
+        ) from exc
+
+    _REQUESTS = requests
+    return _REQUESTS
 
 
 def run():
@@ -117,7 +138,7 @@ def run():
                     shorthand_list = ', '.join(
                         [f'"{key}"' for key in allowed_keys[:-1]]) + ' and ' + f'"{allowed_keys[-1]}"'
                     print(f'There are up to {max_keys} hostnames currently supported: {shorthand_list}')
-                    data = requests.get(hostnames_link).text
+                    data = _get_requests().get(hostnames_link).text
                     results = extract_kv_pairs(data, allowed_keys)
 
                     extracted_hostnames = 0
