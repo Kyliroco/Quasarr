@@ -29,6 +29,29 @@ NEWZNAB_CATEGORY_NAMES = {
 }
 
 
+def _expand_category_ids(category_ids):
+    """Return the provided ids plus their top-level Newznab parents."""
+
+    expanded = set()
+
+    for category_id in category_ids:
+        if not category_id:
+            continue
+
+        category_id = str(category_id)
+        expanded.add(category_id)
+
+        try:
+            numeric_id = int(category_id)
+        except (TypeError, ValueError):
+            continue
+
+        parent_id = numeric_id - (numeric_id % 1000)
+        expanded.add(f"{parent_id:0{len(category_id)}d}")
+
+    return expanded
+
+
 def _build_caps_xml(base_url, version, *, last_update=None):
     info("Lancement build_caps_xml")
     normalized = (base_url or "").rstrip("/") or "http://localhost:9696"
@@ -105,6 +128,8 @@ def _filter_releases_by_categories(releases, allowed_ids, request_from, mode):
     if not allowed_ids:
         return releases
 
+    normalized_ids = _expand_category_ids(allowed_ids)
+
     filtered = []
     for release in releases:
         details = release.get("details", {})
@@ -118,7 +143,7 @@ def _filter_releases_by_categories(releases, allowed_ids, request_from, mode):
             release_category,
         )
 
-        if category_id and category_id in allowed_ids:
+        if category_id and category_id in normalized_ids:
             filtered.append(release)
 
     return filtered
@@ -423,6 +448,22 @@ def setup_arr_routes(app):
                                 info(
                                     f'Ignoring search request from {request_from} - only imdbid searches are supported')
                                 releases = [{}]  # sonarr expects this but we will not support non-imdbid searches
+
+                    allowed_categories = set(
+                        filter(None, getattr(request.query, 'cat', '').split(','))
+                    )
+                    if allowed_categories:
+                        before_count = len(releases)
+                        releases = _filter_releases_by_categories(
+                            releases,
+                            allowed_categories,
+                            request_from,
+                            mode,
+                        )
+                        debug(
+                            f"Filtered releases by categories {sorted(allowed_categories)}: "
+                            f"{before_count} -> {len(releases)}"
+                        )
 
                     items = ""
                     for release in releases:

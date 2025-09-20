@@ -2,6 +2,7 @@ import unittest
 
 from quasarr.api.arr import (
     _build_caps_xml,
+    _expand_category_ids,
     _derive_newznab_category,
     _filter_releases_by_categories,
     _format_newznab_attrs,
@@ -56,6 +57,27 @@ class ArrIndexerHelperTests(unittest.TestCase):
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["details"]["title"], "Movie")
+
+    def test_category_filter_matches_parent_for_subcategories(self):
+        releases = [
+            {"details": {"category": "2000", "title": "Movie"}},
+        ]
+
+        filtered = _filter_releases_by_categories(
+            releases,
+            {"2010"},
+            "Radarr/5",
+            "movie",
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["details"]["title"], "Movie")
+
+    def test_expand_category_ids_includes_parent(self):
+        expanded = _expand_category_ids({"2010", "5000"})
+        self.assertIn("2010", expanded)
+        self.assertIn("2000", expanded)
+        self.assertIn("5000", expanded)
 
     def test_category_filter_drops_unclassified_releases(self):
         releases = [
