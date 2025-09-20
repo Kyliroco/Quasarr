@@ -13,6 +13,7 @@ from quasarr.downloads.sources.by import get_by_download_links
 from quasarr.downloads.sources.dd import get_dd_download_links
 from quasarr.downloads.sources.dt import get_dt_download_links
 from quasarr.downloads.sources.dw import get_dw_download_links
+from quasarr.downloads.sources.me import get_me_download_links
 from quasarr.downloads.sources.mb import get_mb_download_links
 from quasarr.downloads.sources.nx import get_nx_download_links
 from quasarr.downloads.sources.sf import get_sf_download_links, resolve_sf_redirect
@@ -138,6 +139,25 @@ def handle_wd(shared_state, title, password, package_id, imdb_id, url, mirror, s
     )
 
 
+def handle_me(shared_state, title, password, package_id, imdb_id, url, mirror, size_mb):
+    data = get_me_download_links(shared_state, url, mirror, title)
+    links = data.get("links") or []
+    extracted_imdb = data.get("imdb_id")
+    if not imdb_id and extracted_imdb:
+        imdb_id = extracted_imdb
+
+    if not links:
+        fail(title, package_id, shared_state,
+             reason=f'Offline / no links found for "{title}" on ME - "{url}"')
+        return {"success": False, "title": title}
+
+    return handle_unprotected(
+        shared_state, title, password, package_id, imdb_id, url,
+        links=links,
+        label='ME'
+    )
+
+
 def download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id=None):
     if "lazylibrarian" in request_from.lower():
         category = "docs"
@@ -158,6 +178,7 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
         'DD': config.get("dd"),
         'DT': config.get("dt"),
         'DW': config.get("dw"),
+        'ME': config.get("me"),
         'MB': config.get("mb"),
         'NX': config.get("nx"),
         'SF': config.get("sf"),
@@ -171,6 +192,7 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
         (flags['DD'], lambda *a: handle_unprotected(*a, func=get_dd_download_links, label='DD')),
         (flags['DT'], lambda *a: handle_unprotected(*a, func=get_dt_download_links, label='DT')),
         (flags['DW'], lambda *a: handle_protected(*a, func=get_dw_download_links, label='DW')),
+        (flags['ME'], handle_me),
         (flags['MB'], lambda *a: handle_protected(*a, func=get_mb_download_links, label='MB')),
         (flags['NX'], lambda *a: handle_unprotected(*a, func=get_nx_download_links, label='NX')),
         (flags['SF'], handle_sf),

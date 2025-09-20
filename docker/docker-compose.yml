@@ -1,15 +1,15 @@
 services:
     quasarr:
         container_name: 'Quasarr'
+        build:
+            context: ..
+            dockerfile: docker/Dockerfile
         ports:
             - '8080:8080'
         volumes:
+            - '../:/app:rw'
             - '/path/to/config/:/config:rw'
         environment:
-            - 'INTERNAL_ADDRESS=http://192.168.1.1:8080'
-            - 'EXTERNAL_ADDRESS=https://foo.bar/'
-            - 'DISCORD=https://discord.com/api/webhooks/1234567890/ABCDEFGHIJKLMN'
-            - 'EXTERNAL_ADDRESS=https://pastebin.com/raw/eX4Mpl3'
-            - 'SILENT=True'
-            - 'DEBUG='
-        image: 'ghcr.io/rix1337/quasarr:latest'
+            - 'INTERNAL_ADDRESS=http://192.168.1.30:8080'
+            - 'DEBUG=True'
+        image: 'quasarr:local'
