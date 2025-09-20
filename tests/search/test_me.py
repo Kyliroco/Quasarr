@@ -723,6 +723,9 @@ class MaisonEnergySearchTests(unittest.TestCase):
     def setUp(self):
         self.shared_state = FakeSharedState("maison.energy")
 
+    def test_postman_user_agent_defaults_to_films(self):
+        self.assertEqual(me._get_category("PostmanRuntime/7.43.3"), "films")
+
     @patch("quasarr.search.sources.me.requests.get")
     def test_search_results_are_parsed_correctly(self, mock_get):
         final_url = "https://www.maison.energy/?p=films&search=chien"

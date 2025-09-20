@@ -134,6 +134,8 @@ def _get_category(request_from):
     rf = (request_from or "").lower()
     if "radarr" in rf:
         return "films"
+    if "postman" in rf:
+        return "films"
     if "sonarr" in rf:
         if "anime" in rf or "animé" in rf or "manga" in rf:
             return "mangas"
