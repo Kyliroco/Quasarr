@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quasarr"
+version = { attr = "quasarr.providers.version.get_version" }
+description = "Quasarr connects JDownloader with Radarr, Sonarr and LazyLibrarian. It also decrypts links protected by CAPTCHAs."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "MIT" }
+authors = [{ name = "rix1337" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "bottle>=0.13.4",
+    "dukpy>=0.5.0",
+    "pillow>=11.3.0",
+    "pycryptodomex>=3.23.0",
+    "requests>=2.32.4",
+]
+
+[project.entry-points."console_scripts"]
+quasarr = "quasarr:run"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]

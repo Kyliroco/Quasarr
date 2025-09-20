@@ -14,7 +14,6 @@ from types import ModuleType
 from typing import Optional
 from urllib.parse import urlparse
 
-from quasarr.api import get_api
 from quasarr.providers import shared_state, version
 from quasarr.providers.log import info, debug
 from quasarr.providers.notifications import send_discord_message
@@ -256,6 +255,8 @@ def run():
         updater.start()
 
         try:
+            from quasarr.api import get_api
+
             get_api(shared_state_dict, shared_state_lock)
         except KeyboardInterrupt:
             jdownloader.kill()
