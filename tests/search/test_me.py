@@ -530,6 +530,12 @@ MAISON_FILM_DETAIL_HTML = """
                     <br>
                     <a style="display: inline-block; font-size: 14px; font-weight: bold; color: #6060c5; text-decoration: underline; margin: 20px;" rel="nofollow noreferrer" href="https://dl-protect.link/rqts-url?fn=ZmlsbXN8NTU1OHwx">Télécharger Chien en HD</a>
                     <br>
+                    <img src="/templates/zone/images/infos_film.png" alt="Chien"><br>
+                    <br>
+                    <strong><u>Origine</u> :</strong> France<br>
+                    <strong><u>Durée</u> : </strong>01h34<br>
+                    <strong><u>Année de production</u> :</strong> 2017<br>
+                    <strong><u>Titre original</u> :</strong> Chien<br>
                     <img src="/templates/zone/images/liens.png" alt="Chien">
                 </center>
             </div>
@@ -587,6 +593,13 @@ MAISON_FILM_DETAIL_HTML_WITH_EXTRA_HOSTERS = """
             <img src="/img/films/3ba354f710d53c6d667acc96b473ec25.webp" alt="Sebastian">
             <br>
             <a style="display: inline-block; font-size: 14px; font-weight: bold; color: #6060c5; text-decoration: underline; margin: 20px;" rel="nofollow noreferrer" href="https://dl-protect.link/rqts-url?fn=ZmlsbXN8NTIyNzR8MQ==">Télécharger Sebastian en HD</a>
+            <br>
+            <img src="/templates/zone/images/infos_film.png" alt="Sebastian"><br>
+            <br>
+            <strong><u>Origine</u> :</strong> Royaume-Uni<br>
+            <strong><u>Durée</u> :</strong> 01h50<br>
+            <strong><u>Année de production</u> :</strong> 2024<br>
+            <strong><u>Titre original</u> :</strong> Sebastian<br>
         </center>
     </div>
     <br><br>
@@ -729,7 +742,13 @@ class MaisonEnergySearchTests(unittest.TestCase):
     @patch("quasarr.search.sources.me.requests.get")
     def test_search_results_are_parsed_correctly(self, mock_get):
         final_url = "https://www.maison.energy/?p=films&search=chien"
-        mock_get.return_value = DummyResponse(MAISON_SEARCH_HTML, final_url)
+        
+        def side_effect(url, headers=None, timeout=None):
+            if "search=" in url:
+                return DummyResponse(MAISON_SEARCH_HTML, final_url)
+            return DummyResponse(MAISON_FILM_DETAIL_HTML, url)
+
+        mock_get.side_effect = side_effect
 
         releases = me.me_search(self.shared_state,
                                 start_time=0,
@@ -748,6 +767,7 @@ class MaisonEnergySearchTests(unittest.TestCase):
         self.assertEqual(details["source"], "https://www.maison.energy/?p=film&id=186-gabe-un-amour-de-chien")
         self.assertEqual(details["mirror"], None)
         self.assertEqual(details["hostname"], "me")
+        self.assertEqual(details["date"], "2017")
 
         parsed_link = urlparse(details["link"])
         payload = parse_qs(parsed_link.query)["payload"][0]
@@ -757,6 +777,7 @@ class MaisonEnergySearchTests(unittest.TestCase):
 
         final_config = self.shared_state.values["config"]("Hostnames")
         self.assertEqual(final_config.get("me"), "www.maison.energy")
+        self.assertGreater(mock_get.call_count, 1)
 
 
     @patch("quasarr.search.sources.me.requests.get")
@@ -771,7 +792,7 @@ class MaisonEnergySearchTests(unittest.TestCase):
                                 season=1,
                                 episode=1)
 
-        requested_url = mock_get.call_args[0][0]
+        requested_url = mock_get.call_args_list[0][0][0]
         self.assertIn("?p=series&search=chien", requested_url)
         self.assertTrue(releases)
         self.assertEqual(self.shared_state._config_section.saved.get("me"), "www.maison.energy")
@@ -789,7 +810,7 @@ class MaisonEnergySearchTests(unittest.TestCase):
                                 season=1,
                                 episode=1)
 
-        requested_url = mock_get.call_args[0][0]
+        requested_url = mock_get.call_args_list[0][0][0]
         self.assertIn("?p=mangas&search=chien", requested_url)
         self.assertTrue(releases)
         self.assertEqual(self.shared_state._config_section.saved.get("me"), "www.maison.energy")

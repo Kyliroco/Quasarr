@@ -5,6 +5,7 @@
 """Maison Energy search source."""
 
 import html
+import re
 import time
 from base64 import urlsafe_b64encode
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -32,12 +33,53 @@ def _update_hostname(shared_state, current_host, final_url):
     return current_host
 
 
+def _extract_production_year(text):
+    if not text:
+        return ""
+
+    match = re.search(r"ann[eé]e\s+de\s+production[^0-9]*(\d{4})", text, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
+    updated_host = current_host
+    production_year = ""
+
+    if not source_url:
+        return updated_host, production_year
+
+    try:
+        response = requests.get(source_url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except Exception as exc:
+        debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
+        return updated_host, production_year
+
+    updated_host = _update_hostname(shared_state, current_host, response.url)
+
+    try:
+        detail_soup = BeautifulSoup(response.text, "html.parser")
+        text = detail_soup.get_text(" ", strip=True)
+        production_year = _extract_production_year(text)
+        if production_year:
+            debug(
+                f"{hostname.upper()} extracted production year '{production_year}' from {response.url}"
+            )
+    except Exception as exc:
+        debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
+
+    return updated_host, production_year
+
+
 def _parse_results(shared_state,
                    soup,
                    base_url,
                    password,
                    request_from,
                    mirror,
+                   headers,
                    search_string=None,
                    season=None,
                    episode=None,
@@ -49,6 +91,9 @@ def _parse_results(shared_state,
         f"{hostname.upper()} parsing {len(cards)} cards from {base_url} "
         f"(requester={request_from}, mirror={mirror})"
     )
+
+    current_host = password
+    metadata_cache = {}
 
     for card in cards:
         try:
@@ -92,6 +137,26 @@ def _parse_results(shared_state,
             time_tag = card.find("time")
             published = time_tag.get_text(strip=True) if time_tag else ""
 
+            detail_year = ""
+            release_host = current_host
+
+            if headers is not None:
+                if source not in metadata_cache:
+                    metadata_cache[source] = _fetch_detail_metadata(
+                        shared_state,
+                        source,
+                        headers,
+                        current_host,
+                    )
+
+                updated_host, detail_year = metadata_cache[source]
+                if updated_host:
+                    current_host = updated_host
+                    release_host = updated_host
+
+            if detail_year:
+                published = detail_year
+
             mb = 0
             release_imdb_id = imdb_id
 
@@ -100,7 +165,7 @@ def _parse_results(shared_state,
                 final_title = f"{title} - {quality}"
 
             payload = urlsafe_b64encode(
-                f"{final_title}|{source}|{mirror}|{mb}|{password}|{release_imdb_id}".encode("utf-8")
+                f"{final_title}|{source}|{mirror}|{mb}|{release_host}|{release_imdb_id}".encode("utf-8")
             ).decode("utf-8")
 
             link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
@@ -171,7 +236,13 @@ def me_feed(shared_state, start_time, request_from, mirror=None):
         me = _update_hostname(shared_state, me, response.url)
         password = me
         soup = BeautifulSoup(response.text, "html.parser")
-        releases = _parse_results(shared_state, soup, response.url, password, request_from, mirror)
+        releases = _parse_results(shared_state,
+                                  soup,
+                                  response.url,
+                                  password,
+                                  request_from,
+                                  mirror,
+                                  headers)
     except Exception as exc:
         message = f"Error loading {hostname.upper()} feed: {exc}"
         info(message)
@@ -231,6 +302,7 @@ def me_search(shared_state,
                                   password,
                                   request_from,
                                   mirror,
+                                  headers,
                                   search_string=search_string,
                                   season=season,
                                   episode=episode,
