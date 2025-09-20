@@ -598,7 +598,8 @@ def is_valid_release(title: str,
     try:
         # Determine whether this is a movie or TV search
         rf = request_from.lower()
-        is_movie_search = 'radarr' in rf
+        is_postman = 'postman' in rf
+        is_movie_search = 'radarr' in rf or is_postman
         is_tv_search = 'sonarr' in rf
         is_docs_search = 'lazylibrarian' in rf
 
@@ -617,7 +618,7 @@ def is_valid_release(title: str,
             return True
 
         # if it's a TV show search, don't allow any movies (check for season or episode tags in the title)
-        if is_tv_search:
+        if is_tv_search and not is_postman:
             # must have some S/E tag present
             if not SEASON_EP_REGEX.search(title):
                 debug(f"Skipping {title!r} as title doesn't match TV show regex: {SEASON_EP_REGEX.pattern}")
