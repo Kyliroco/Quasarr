@@ -7,6 +7,7 @@ import xml.sax.saxutils as sax_utils
 from base64 import urlsafe_b64decode
 from datetime import datetime
 from functools import wraps
+from textwrap import dedent
 from urllib.parse import urlparse, parse_qs
 from xml.etree import ElementTree
 
@@ -26,6 +27,52 @@ NEWZNAB_CATEGORY_NAMES = {
     "5000": "TV",
     "7000": "Books",
 }
+
+
+def _build_caps_xml(base_url, version, *, last_update=None):
+    normalized = (base_url or "").rstrip("/") or "http://localhost:9696"
+    server_url = f"{normalized}/"
+    image_url = f"{normalized}/static/logo.png"
+    last_update = last_update or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return dedent(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<caps>
+  <server version="{version}" title="Quasarr" strapline="Maison Energy indexer bridge"
+      email="support@quasarr.app" url="{server_url}"
+      image="{image_url}" />
+  <limits max="100" default="50" />
+  <retention days="0" />
+  <registration available="no" open="no" />
+  <searching>
+    <search available="yes" supportedParams="q" />
+    <tv-search available="yes" supportedParams="imdbid,season,ep" />
+    <movie-search available="yes" supportedParams="imdbid" />
+    <audio-search available="no" supportedParams="q" />
+    <book-search available="no" supportedParams="q" />
+  </searching>
+  <categories>
+    <category id="2000" name="Movies">
+      <subcat id="2010" name="Foreign" />
+    </category>
+    <category id="5000" name="TV">
+      <subcat id="5040" name="HD" />
+      <subcat id="5070" name="Anime" />
+    </category>
+  </categories>
+  <groups>
+    <group id="1" name="maison.energy" description="Maison Energy releases" lastupdate="{last_update}" />
+  </groups>
+  <genres>
+    <genre id="1" categoryid="5000" name="Anime" />
+  </genres>
+  <tags>
+    <tag name="anonymous" description="Uploader is anonymous" />
+    <tag name="trusted" description="Uploader has high reputation" />
+    <tag name="internal" description="Uploader is an internal release group" />
+  </tags>
+</caps>"""
+    ).strip()
 
 
 def _derive_newznab_category(request_from, mode, release_category=None):
@@ -319,27 +366,9 @@ def setup_arr_routes(app):
 
                 if mode == 'caps':
                     info(f"Providing indexer capability information to {request_from}")
-                    return '''<?xml version="1.0" encoding="UTF-8"?>
-                                <caps>
-                                  <server
-                                    version="1.33.7"
-                                    title="Quasarr"
-                                    url="https://quasarr.indexer/"
-                                    email="support@quasarr.indexer"
-                                  />
-                                  <limits max="9999" default="9999" />
-                                  <registration available="no" open="no" />
-                                  <searching>
-                                    <search available="yes" supportedParams="q" />
-                                    <tv-search available="yes" supportedParams="imdbid,season,ep" />
-                                    <movie-search available="yes" supportedParams="imdbid" />
-                                  </searching>
-                                  <categories>
-                                    <category id="5000" name="TV" />
-                                    <category id="2000" name="Movies" />
-                                    <category id="7000" name="Books" />
-                                  </categories>
-                                </caps>'''
+                    base_url = shared_state.values.get("internal_address", "http://localhost:9696")
+                    caps_xml = _build_caps_xml(base_url, get_version())
+                    return caps_xml
                 elif mode in ['movie', 'tvsearch', 'book', 'search']:
                     releases = []
 

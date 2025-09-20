@@ -1,6 +1,7 @@
 import unittest
 
 from quasarr.api.arr import (
+    _build_caps_xml,
     _derive_newznab_category,
     _filter_releases_by_categories,
     _format_newznab_attrs,
@@ -70,6 +71,54 @@ class ArrIndexerHelperTests(unittest.TestCase):
         )
 
         self.assertFalse(filtered)
+
+    def test_caps_xml_matches_expected_format(self):
+        xml_output = _build_caps_xml(
+            "http://indexer.local",
+            "1.2.3",
+            last_update="2025-01-01T00:00:00Z",
+        )
+
+        expected = (
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<caps>\n"
+            "  <server version=\"1.2.3\" title=\"Quasarr\" strapline=\"Maison Energy indexer bridge\"\n"
+            "      email=\"support@quasarr.app\" url=\"http://indexer.local/\"\n"
+            "      image=\"http://indexer.local/static/logo.png\" />\n"
+            "  <limits max=\"100\" default=\"50\" />\n"
+            "  <retention days=\"0\" />\n"
+            "  <registration available=\"no\" open=\"no\" />\n"
+            "  <searching>\n"
+            "    <search available=\"yes\" supportedParams=\"q\" />\n"
+            "    <tv-search available=\"yes\" supportedParams=\"imdbid,season,ep\" />\n"
+            "    <movie-search available=\"yes\" supportedParams=\"imdbid\" />\n"
+            "    <audio-search available=\"no\" supportedParams=\"q\" />\n"
+            "    <book-search available=\"no\" supportedParams=\"q\" />\n"
+            "  </searching>\n"
+            "  <categories>\n"
+            "    <category id=\"2000\" name=\"Movies\">\n"
+            "      <subcat id=\"2010\" name=\"Foreign\" />\n"
+            "    </category>\n"
+            "    <category id=\"5000\" name=\"TV\">\n"
+            "      <subcat id=\"5040\" name=\"HD\" />\n"
+            "      <subcat id=\"5070\" name=\"Anime\" />\n"
+            "    </category>\n"
+            "  </categories>\n"
+            "  <groups>\n"
+            "    <group id=\"1\" name=\"maison.energy\" description=\"Maison Energy releases\" lastupdate=\"2025-01-01T00:00:00Z\" />\n"
+            "  </groups>\n"
+            "  <genres>\n"
+            "    <genre id=\"1\" categoryid=\"5000\" name=\"Anime\" />\n"
+            "  </genres>\n"
+            "  <tags>\n"
+            "    <tag name=\"anonymous\" description=\"Uploader is anonymous\" />\n"
+            "    <tag name=\"trusted\" description=\"Uploader has high reputation\" />\n"
+            "    <tag name=\"internal\" description=\"Uploader is an internal release group\" />\n"
+            "  </tags>\n"
+            "</caps>"
+        )
+
+        self.assertEqual(xml_output, expected)
 
 
 if __name__ == "__main__":
