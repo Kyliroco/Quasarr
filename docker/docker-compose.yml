@@ -10,10 +10,6 @@ services:
             - '../:/app:rw'
             - '/path/to/config/:/config:rw'
         environment:
-            - 'INTERNAL_ADDRESS=http://192.168.1.1:8080'
-            - 'EXTERNAL_ADDRESS=https://foo.bar/'
-            - 'DISCORD=https://discord.com/api/webhooks/1234567890/ABCDEFGHIJKLMN'
-            - 'EXTERNAL_ADDRESS=https://pastebin.com/raw/eX4Mpl3'
-            - 'SILENT=True'
-            - 'DEBUG='
+            - 'INTERNAL_ADDRESS=http://192.168.1.30:8080'
+            - 'DEBUG=True'
         image: 'quasarr:local'
