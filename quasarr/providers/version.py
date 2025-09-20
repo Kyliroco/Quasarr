@@ -4,8 +4,6 @@
 
 import re
 
-import requests
-
 
 def get_version():
     return "1.16.3"
@@ -17,6 +15,10 @@ def get_latest_version():
     Returns the tag name string (e.g. "1.5.0" or "1.4.2a1").
     Raises RuntimeError on HTTP errors.
     """
+    try:
+        import requests
+    except ImportError as exc:  # pragma: no cover - packaging safeguard
+        raise RuntimeError("The 'requests' dependency is required to check for updates.") from exc
     api_url = "https://api.github.com/repos/rix1337/Quasarr/releases/latest"
     resp = requests.get(api_url, headers={"Accept": "application/vnd.github.v3+json"})
     if resp.status_code != 200:

@@ -1,0 +1,819 @@
+{
+    "info": {
+        "name": "Quasarr API",
+        "description": "Collection covering the public Bottle endpoints exposed by Quasarr. Set the `baseUrl` and `apiKey` variables to match your deployment before sending any request.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "_postman_id": "0f1c19d4-5f7b-4eb2-9a3f-64f5d7a5a000"
+    },
+    "item": [
+        {
+            "name": "General",
+            "item": [
+                {
+                    "name": "Landing Page",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Returns the HTML dashboard with quick links, API key controls and captcha status.",
+                        "url": {
+                            "raw": "{{baseUrl}}/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Regenerate API Key",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Triggers API key rotation and redirects back to the landing page once the key is regenerated.",
+                        "url": {
+                            "raw": "{{baseUrl}}/regenerate-api-key",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "regenerate-api-key"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Statistics Dashboard",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Shows aggregated download and CAPTCHA metrics rendered in HTML.",
+                        "url": {
+                            "raw": "{{baseUrl}}/statistics",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "statistics"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Configuration",
+            "item": [
+                {
+                    "name": "Hostname Configuration Form",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Serves the HTML form that lets you edit the hostname mapping used by the providers.",
+                        "url": {
+                            "raw": "{{baseUrl}}/hostnames",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "hostnames"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Update Hostnames",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "description": "Saves one or more hostname overrides. Leave a field empty to keep the previous value.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "al",
+                                    "value": "al.example.com",
+                                    "type": "text",
+                                    "description": "(Optional) Hostname used for the AL provider."
+                                },
+                                {
+                                    "key": "me",
+                                    "value": "maison.energy",
+                                    "type": "text",
+                                    "description": "(Optional) Hostname for Maison Energy searches/downloads."
+                                },
+                                {
+                                    "key": "dd",
+                                    "value": "",
+                                    "type": "text",
+                                    "description": "Leave blank to retain the current setting."
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/api/hostnames",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api",
+                                "hostnames"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Indexer",
+            "item": [
+                {
+                    "name": "Capabilities (caps)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Newznab capability document consumed by Radarr/Sonarr to learn which query params are supported.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&t=caps",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}",
+                                    "description": "Your Quasarr API key."
+                                },
+                                {
+                                    "key": "t",
+                                    "value": "caps",
+                                    "description": "Indexer capability request."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Movie Search by IMDb ID",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Radarr style search. Provide an IMDb identifier to retrieve available releases across configured sites.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&t=movie&imdbid=tt1375666",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "t",
+                                    "value": "movie",
+                                    "description": "Selects the movie search mode."
+                                },
+                                {
+                                    "key": "imdbid",
+                                    "value": "tt1375666",
+                                    "description": "IMDb identifier (with tt prefix)."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "TV Search by IMDb/Season/Episode",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Sonarr style lookup that narrows down releases for a specific episode.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&t=tvsearch&imdbid=tt0944947&season=1&ep=1",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "t",
+                                    "value": "tvsearch"
+                                },
+                                {
+                                    "key": "imdbid",
+                                    "value": "tt0944947",
+                                    "description": "IMDb show identifier."
+                                },
+                                {
+                                    "key": "season",
+                                    "value": "1",
+                                    "description": "Season number Sonarr is trying to grab."
+                                },
+                                {
+                                    "key": "ep",
+                                    "value": "1",
+                                    "description": "Episode number."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Book Search (LazyLibrarian)",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "User-Agent",
+                                "value": "LazyLibrarian/1.0",
+                                "description": "Only LazyLibrarian style clients may use search phrases."
+                            }
+                        ],
+                        "description": "Combines author and title into a phrase search. The LazyLibrarian user agent is required for this endpoint to be honored.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&t=book&author=Isaac%20Asimov&title=Foundation",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "t",
+                                    "value": "book"
+                                },
+                                {
+                                    "key": "author",
+                                    "value": "Isaac Asimov",
+                                    "description": "Book author or part of it."
+                                },
+                                {
+                                    "key": "title",
+                                    "value": "Foundation",
+                                    "description": "Book title or part of it."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Generic Phrase Search (LazyLibrarian)",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "User-Agent",
+                                "value": "LazyLibrarian/1.0",
+                                "description": "Must mimic LazyLibrarian to use arbitrary search phrases."
+                            }
+                        ],
+                        "description": "Direct phrase search over supported sources. Ignored for Radarr/Sonarr style agents.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&t=search&q=Foundation",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "t",
+                                    "value": "search"
+                                },
+                                {
+                                    "key": "q",
+                                    "value": "Foundation",
+                                    "description": "Term passed through to the LazyLibrarian compatible sources."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Download Client",
+            "item": [
+                {
+                    "name": "Handshake (mode=auth)",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "SABnzbd style auth probe. Returns the authentication method the mock client expects.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=auth",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "auth"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Version",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Returns the Quasarr version string for SAB compatible integrations.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=version",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "version"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Categories",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Lists the logical categories exposed by the mock download client.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=get_cats",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "get_cats"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Configuration Snapshot",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Full configuration payload mirroring SABnzbd's `get_config` response.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=get_config",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "get_config"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Queue Overview",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Returns the current mock download queue. Use the optional `name=delete` and `value=<packageId>` parameters to remove an entry.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=queue",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "queue"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "History Overview",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Lists past download attempts recorded by Quasarr.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=history",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "history"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Add URL Payload",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Simulates SAB's `addurl` call. The `name` parameter must point at the `/download/` helper that returns a single NZB element.",
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}&mode=addurl&name={{downloadPayloadUrl}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                },
+                                {
+                                    "key": "mode",
+                                    "value": "addurl"
+                                },
+                                {
+                                    "key": "name",
+                                    "value": "{{downloadPayloadUrl}}",
+                                    "description": "URL returned by the `Fake NZB` request."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Downloads",
+            "item": [
+                {
+                    "name": "Fake NZB Payload",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Decodes the helper payload into an NZB wrapper. Useful when constructing the `mode=addurl` request.",
+                        "url": {
+                            "raw": "{{downloadPayloadUrl}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "download",
+                                ""
+                            ],
+                            "query": [
+                                {
+                                    "key": "payload",
+                                    "value": "{{samplePayload}}",
+                                    "description": "Base64 encoded `title|url|mirror|size|password|imdb_id` tuple."
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Upload NZB",
+                    "request": {
+                        "method": "POST",
+                        "header": [],
+                        "description": "Uploads one or more NZB files via the mock SAB API. Attach the `sample.nzb` file or your own payload under the `name` form field.",
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "name",
+                                    "type": "file",
+                                    "src": "postman/samples/sample.nzb",
+                                    "description": "Attach one or more NZB files using the `name` field."
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/api?apikey={{apiKey}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "api"
+                            ],
+                            "query": [
+                                {
+                                    "key": "apikey",
+                                    "value": "{{apiKey}}"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "CAPTCHA",
+            "item": [
+                {
+                    "name": "Pending CAPTCHA Overview",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "HTML helper that lists protected packages waiting for manual solving.",
+                        "url": {
+                            "raw": "{{baseUrl}}/captcha",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "captcha"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Delete Protected Package",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Removes a package from the protected queue. Replace `{{packageId}}` with the identifier returned by the protected database endpoints.",
+                        "url": {
+                            "raw": "{{baseUrl}}/captcha/delete/{{packageId}}",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "captcha",
+                                "delete",
+                                "{{packageId}}"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "Sponsors Helper",
+            "item": [
+                {
+                    "name": "Activate Sponsor Status",
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "description": "Marks the helper integration as active so subsequent decrypt requests are served.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"activate\": true\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/sponsors_helper/api/activate_sponsor_status/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sponsors_helper",
+                                "api",
+                                "activate_sponsor_status",
+                                ""
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Next Package to Decrypt",
+                    "request": {
+                        "method": "GET",
+                        "header": [],
+                        "description": "Retrieves the next protected package that needs to be solved by the Sponsors Helper integration.",
+                        "url": {
+                            "raw": "{{baseUrl}}/sponsors_helper/api/to_decrypt/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sponsors_helper",
+                                "api",
+                                "to_decrypt",
+                                ""
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Submit Solved Links",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "description": "Sends decrypted download URLs back to Quasarr. Replace placeholder values before running.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"name\": \"Sample Title\",\n  \"package_id\": \"12345\",\n  \"urls\": [\n    [\"https://dl-protect.link/example\", \"Rapidgator\"]\n  ],\n  \"password\": \"password123\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/sponsors_helper/api/to_download/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sponsors_helper",
+                                "api",
+                                "to_download",
+                                ""
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Request Replacement Link",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "description": "Use when a CAPTCHA flow needs to be retried with a replacement link.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"name\": \"Sample Title\",\n  \"package_id\": \"12345\",\n  \"password\": \"password123\",\n  \"replace_url\": \"https://dl-protect.link/example\",\n  \"mirror\": \"https://dl-protect.link/example\",\n  \"session\": \"session-token\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/sponsors_helper/api/to_replace/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sponsors_helper",
+                                "api",
+                                "to_replace",
+                                ""
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Mark Package as Failed",
+                    "request": {
+                        "method": "DELETE",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "description": "Signals that the helper could not solve a package after the configured retries.",
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"package_id\": \"12345\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/sponsors_helper/api/to_failed/",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "sponsors_helper",
+                                "api",
+                                "to_failed",
+                                ""
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://localhost:8080",
+            "type": "string",
+            "description": "Point to the Quasarr instance you want to exercise."
+        },
+        {
+            "key": "apiKey",
+            "value": "REPLACE_WITH_REAL_KEY",
+            "type": "string",
+            "description": "Copy the API key from the landing page or configuration file."
+        },
+        {
+            "key": "samplePayload",
+            "value": "U2FtcGxlIFRpdGxlfGh0dHBzOi8vZGwtcHJvdGVjdC5saW5rL2V4YW1wbGV8Tm9uZXwxNTAwfHBhc3N3b3JkMTIzfHR0MTIzNDU2Nw==",
+            "type": "string",
+            "description": "Helper payload encoding `Sample Title|https://dl-protect.link/example|None|1500|password123|tt1234567`."
+        },
+        {
+            "key": "downloadPayloadUrl",
+            "value": "{{baseUrl}}/download/?payload={{samplePayload}}",
+            "type": "string",
+            "description": "Composed URL pointing at the fake `/download/` endpoint used by `mode=addurl`."
+        },
+        {
+            "key": "packageId",
+            "value": "REPLACE_WITH_PACKAGE_ID",
+            "type": "string",
+            "description": "Placeholder for package identifiers returned by protected downloads or history entries."
+        }
+    ]
+}
