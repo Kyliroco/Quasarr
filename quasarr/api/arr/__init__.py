@@ -21,6 +21,47 @@ from quasarr.search import get_search_results
 from quasarr.storage.config import Config
 
 
+NEWZNAB_CATEGORY_NAMES = {
+    "2000": "Movies",
+    "5000": "TV",
+    "7000": "Books",
+}
+
+
+def _derive_newznab_category(request_from, mode, release_category=None):
+    """Return the Newznab category id/name tuple for a release."""
+    if release_category:
+        category_id = str(release_category)
+        return category_id, NEWZNAB_CATEGORY_NAMES.get(category_id)
+
+    rf = (request_from or "").lower()
+    mode = (mode or "").lower()
+
+    if mode == "movie" or "radarr" in rf:
+        return "2000", NEWZNAB_CATEGORY_NAMES.get("2000")
+    if mode == "tvsearch" or "sonarr" in rf:
+        return "5000", NEWZNAB_CATEGORY_NAMES.get("5000")
+    if mode in {"book", "search"} or "lazylibrarian" in rf:
+        return "7000", NEWZNAB_CATEGORY_NAMES.get("7000")
+    return None, None
+
+
+def _format_newznab_attrs(category_id, imdb_id, size):
+    attrs = []
+    if category_id:
+        attrs.append(f'<newznab:attr name="category" value="{category_id}" />')
+    if imdb_id:
+        imdb_value = imdb_id[2:] if imdb_id.startswith("tt") else imdb_id
+        if imdb_value:
+            attrs.append(f'<newznab:attr name="imdbid" value="{imdb_value}" />')
+    if size:
+        attrs.append(f'<newznab:attr name="size" value="{size}" />')
+    if not attrs:
+        return ""
+    indent = " " * 28
+    return "\n".join(f"{indent}{line}" for line in attrs)
+
+
 def require_api_key(func):
     @wraps(func)
     def decorated(*args, **kwargs):
@@ -256,11 +297,11 @@ def setup_arr_routes(app):
                     info(f"Providing indexer capability information to {request_from}")
                     return '''<?xml version="1.0" encoding="UTF-8"?>
                                 <caps>
-                                  <server 
-                                    version="1.33.7" 
-                                    title="Quasarr" 
-                                    url="https://quasarr.indexer/" 
-                                    email="support@quasarr.indexer" 
+                                  <server
+                                    version="1.33.7"
+                                    title="Quasarr"
+                                    url="https://quasarr.indexer/"
+                                    email="support@quasarr.indexer"
                                   />
                                   <limits max="9999" default="9999" />
                                   <registration available="no" open="no" />
@@ -272,8 +313,7 @@ def setup_arr_routes(app):
                                   <categories>
                                     <category id="5000" name="TV" />
                                     <category id="2000" name="Movies" />
-                                    <category id="7000" name="Books">
-                                  </category>
+                                    <category id="7000" name="Books" />
                                   </categories>
                                 </caps>'''
                 elif mode in ['movie', 'tvsearch', 'book', 'search']:
@@ -336,9 +376,20 @@ def setup_arr_routes(app):
                         # Ensure clean XML output
                         title = sax_utils.escape(release.get("title", ""))
                         source = sax_utils.escape(release.get("source", ""))
+                        imdb_id = release.get("imdb_id")
+                        size = release.get("size", 0)
+                        category_id, category_name = _derive_newznab_category(
+                            request_from,
+                            mode,
+                            release.get("category"),
+                        )
+                        attrs = _format_newznab_attrs(category_id, imdb_id, size)
 
                         if not "lazylibrarian" in request_from.lower():
                             title = f'[{release.get("hostname", "").upper()}] {title}'
+
+                        category_tag = f"<category>{category_name}</category>" if category_name else ""
+                        attrs_block = f"\n{attrs}" if attrs else ""
 
                         items += f'''
                         <item>
@@ -348,10 +399,11 @@ def setup_arr_routes(app):
                             <comments>{source}</comments>
                             <pubDate>{release.get("date", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000"))}</pubDate>
                             <enclosure url="{release.get("link", "")}" length="{release.get("size", 0)}" type="application/x-nzb" />
+                            {category_tag}{attrs_block}
                         </item>'''
 
                     return f'''<?xml version="1.0" encoding="UTF-8"?>
-                                <rss>
+                                <rss xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
                                     <channel>
                                         {items}
                                     </channel>

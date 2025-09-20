@@ -768,6 +768,7 @@ class MaisonEnergySearchTests(unittest.TestCase):
         self.assertEqual(details["mirror"], None)
         self.assertEqual(details["hostname"], "me")
         self.assertEqual(details["date"], "2017")
+        self.assertEqual(details["category"], "2000")
 
         parsed_link = urlparse(details["link"])
         payload = parse_qs(parsed_link.query)["payload"][0]

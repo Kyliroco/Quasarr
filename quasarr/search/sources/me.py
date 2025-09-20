@@ -85,6 +85,7 @@ def _parse_results(shared_state,
                    episode=None,
                    imdb_id=None):
     releases = []
+    category_id = _get_newznab_category_id(request_from)
     cards = soup.select("div.cover_global")
 
     debug(
@@ -184,6 +185,7 @@ def _parse_results(shared_state,
                     "size": 0,
                     "date": published,
                     "source": source,
+                    "category": category_id,
                 },
                 "type": "protected",
             })
@@ -205,6 +207,17 @@ def _get_category(request_from):
         if "anime" in rf or "animé" in rf or "manga" in rf:
             return "mangas"
         return "series"
+    return None
+
+
+def _get_newznab_category_id(request_from):
+    rf = (request_from or "").lower()
+    if "sonarr" in rf:
+        return "5000"
+    if "lazylibrarian" in rf:
+        return "7000"
+    if "radarr" in rf or "postman" in rf:
+        return "2000"
     return None
 
 
