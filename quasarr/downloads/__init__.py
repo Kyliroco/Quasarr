@@ -151,11 +151,9 @@ def handle_me(shared_state, title, password, package_id, imdb_id, url, mirror, s
              reason=f'Offline / no links found for "{title}" on ME - "{url}"')
         return {"success": False, "title": title}
 
-    return handle_protected(
+    return handle_unprotected(
         shared_state, title, password, package_id, imdb_id, url,
-        mirror=mirror,
-        size_mb=size_mb,
-        func=lambda ss, u, m, t: links,
+        links=links,
         label='ME'
     )
 
