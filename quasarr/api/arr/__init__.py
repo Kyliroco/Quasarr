@@ -62,6 +62,30 @@ def _format_newznab_attrs(category_id, imdb_id, size):
     return "\n".join(f"{indent}{line}" for line in attrs)
 
 
+def _filter_releases_by_categories(releases, allowed_ids, request_from, mode):
+    """Limit releases to those whose category matches the requested ids."""
+    if not allowed_ids:
+        return releases
+
+    filtered = []
+    for release in releases:
+        details = release.get("details", {})
+        release_category = details.get("category")
+        if release_category is None:
+            continue
+
+        category_id, _ = _derive_newznab_category(
+            request_from,
+            mode,
+            release_category,
+        )
+
+        if category_id and category_id in allowed_ids:
+            filtered.append(release)
+
+    return filtered
+
+
 def require_api_key(func):
     @wraps(func)
     def decorated(*args, **kwargs):
@@ -368,6 +392,22 @@ def setup_arr_routes(app):
                                 info(
                                     f'Ignoring search request from {request_from} - only imdbid searches are supported')
                                 releases = [{}]  # sonarr expects this but we will not support non-imdbid searches
+
+                    allowed_categories = set(
+                        filter(None, getattr(request.query, 'cat', '').split(','))
+                    )
+                    if allowed_categories:
+                        before_count = len(releases)
+                        releases = _filter_releases_by_categories(
+                            releases,
+                            allowed_categories,
+                            request_from,
+                            mode,
+                        )
+                        debug(
+                            f"Filtered releases by categories {sorted(allowed_categories)}: "
+                            f"{before_count} -> {len(releases)}"
+                        )
 
                     items = ""
                     for release in releases:

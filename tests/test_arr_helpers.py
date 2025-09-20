@@ -1,6 +1,10 @@
 import unittest
 
-from quasarr.api.arr import _derive_newznab_category, _format_newznab_attrs
+from quasarr.api.arr import (
+    _derive_newznab_category,
+    _filter_releases_by_categories,
+    _format_newznab_attrs,
+)
 
 
 class ArrIndexerHelperTests(unittest.TestCase):
@@ -35,6 +39,37 @@ class ArrIndexerHelperTests(unittest.TestCase):
 
     def test_newznab_attrs_skip_when_empty(self):
         self.assertEqual(_format_newznab_attrs(None, None, 0), "")
+
+    def test_category_filter_returns_matching_releases(self):
+        releases = [
+            {"details": {"category": "2000", "title": "Movie"}},
+            {"details": {"category": "5000", "title": "Show"}},
+        ]
+
+        filtered = _filter_releases_by_categories(
+            releases,
+            {"2000"},
+            "Radarr/5",
+            "movie",
+        )
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["details"]["title"], "Movie")
+
+    def test_category_filter_drops_unclassified_releases(self):
+        releases = [
+            {"details": {}},
+            {"details": {"category": "5000"}},
+        ]
+
+        filtered = _filter_releases_by_categories(
+            releases,
+            {"2000"},
+            "Radarr/5",
+            "movie",
+        )
+
+        self.assertFalse(filtered)
 
 
 if __name__ == "__main__":
