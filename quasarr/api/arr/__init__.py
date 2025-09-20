@@ -150,9 +150,9 @@ def setup_arr_routes(app):
                     return {
                         "categories": [
                             "*",
-                            "movies",
-                            "tv",
-                            "docs"
+                            "Movies",
+                            "TV",
+                            "Docs"
                         ]
                     }
                 elif mode == "get_config":
@@ -169,17 +169,17 @@ def setup_arr_routes(app):
                                     "dir": "",
                                 },
                                 {
-                                    "name": "movies",
+                                    "name": "Movies",
                                     "order": 1,
                                     "dir": "",
                                 },
                                 {
-                                    "name": "tv",
+                                    "name": "TV",
                                     "order": 2,
                                     "dir": "",
                                 },
                                 {
-                                    "name": "docs",
+                                    "name": "Docs",
                                     "order": 3,
                                     "dir": "",
                                 },
