@@ -17,6 +17,7 @@ from quasarr.search.sources.nx import nx_feed, nx_search
 from quasarr.search.sources.sf import sf_feed, sf_search
 from quasarr.search.sources.sl import sl_feed, sl_search
 from quasarr.search.sources.wd import wd_feed, wd_search
+from quasarr.search.sources.zt import zt_feed, zt_search
 
 
 def get_search_results(shared_state, request_from, imdb_id="", search_phrase="", mirror=None, season="", episode=""):
@@ -38,6 +39,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
     sf = shared_state.values["config"]("Hostnames").get("sf")
     sl = shared_state.values["config"]("Hostnames").get("sl")
     wd = shared_state.values["config"]("Hostnames").get("wd")
+    zt = shared_state.values["config"]("Hostnames").get("zt")
 
     start_time = time.time()
 
@@ -56,6 +58,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
         (sf, sf_search),
         (sl, sl_search),
         (wd, wd_search),
+        (zt, zt_search),
     ]
 
     # LazyLibrarian uses search_phrase for searches
@@ -80,6 +83,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
         (sf, sf_feed),
         (sl, sl_feed),
         (wd, wd_feed),
+        (zt, zt_feed),
     ]
 
     if imdb_id:  # only Radarr/Sonarr are using imdb_id

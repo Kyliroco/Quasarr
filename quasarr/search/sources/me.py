@@ -16,76 +16,8 @@ from bs4 import BeautifulSoup
 from quasarr.providers.imdb_metadata import get_localized_title
 from quasarr.providers.log import info, debug
 
-hostname = "zt"
+hostname = "me"
 
-def _extract_supported_mirrors(detail_soup):
-    """
-    Parcourt les blocs <div class="postinfo"> et extrait les mirrors supportés.
-    Structure typique répétée :
-        <b><div>HostName</div></b>
-        <b><a href="...&rl=a2">Télécharger</a></b><br><br>
-    On ne retient que les liens de téléchargement (rl=a2).
-    """
-    supported = set()
-
-    def normalize_host(h: str) -> str:
-        h = (h or "").strip().lower()
-        # uniformiser quelques variantes/domains
-        h_norm = (
-            h.replace(" ", "")
-             .replace("-", "")
-             .replace("_", "")
-             .replace(".", "")
-        )
-        if h_norm.startswith("rapidgator"):
-            return "rapidgator"
-        if h_norm in {"ddownload", "ddl", "ddlto", "ddownlaod", "ddown"}:
-            return "ddownload"
-        if h_norm.startswith("1fichier"):
-            return "1fichier"
-        if "nitro" in h_norm:
-            return "nitroflare"
-        if "turbobit" in h_norm:
-            return "turbobit"
-        if "uploady" in h_norm:
-            return "uploady"
-        if "dailyuploads" in h_norm or "dailyupload" in h_norm:
-            return "dailyuploads"
-        return h.lower()
-
-    for post in detail_soup.select("div.postinfo"):
-        # On cherche les <b> qui contiennent un <div> (le nom d'hébergeur)
-        for host_b in post.select("b"):
-            host_div = host_b.find("div")
-            if not host_div:
-                continue
-
-            host = normalize_host(host_div.get_text(strip=True))
-
-            # Avancer jusqu'au prochain sibling <b> porteur du <a href=...>
-            sib = host_b.next_sibling
-            while sib and (getattr(sib, "name", None) is None or getattr(sib, "name", None) == "br"):
-                sib = sib.next_sibling
-            if not getattr(sib, "name", None) == "b":
-                # fallback : au cas où le DOM soit un peu plus bruité
-                sib = host_b.find_next("b")
-            if not sib:
-                continue
-
-            a = sib.find("a", href=True)
-            if not a:
-                continue
-
-            href = a["href"]
-            # On ne garde que les liens de téléchargement (rl=a2), pas le streaming (rl=a1)
-            if "rl=a2" not in href:
-                continue
-
-            # Filtrage final via SUPPORTED_MIRRORS (défini en haut du module)
-            if host in SUPPORTED_MIRRORS:
-                supported.add(host)
-
-    return list(supported)
 
 def _update_hostname(shared_state, current_host, final_url):
     try:
@@ -146,10 +78,7 @@ def _extract_size_mb(shared_state, text):
             continue
 
     return 0
-def _extract_title(soup):
-    font_red = soup.find("font", {"color": "red"})
-    titre = font_red.get_text(strip=True) if font_red else None
-    return titre
+
 
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
@@ -171,7 +100,6 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     try:
         detail_soup = BeautifulSoup(response.text, "html.parser")
         text = detail_soup.get_text(" ", strip=True)
-        title = _extract_title(detail_soup)
         production_year = _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
         if production_year:
@@ -185,7 +113,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb,title
+    return updated_host, production_year, size_mb
 
 
 def _normalize_title(title):
@@ -201,10 +129,10 @@ def _normalize_title(title):
 def _parse_results(shared_state,
                    soup,
                    base_url,
+                   password,
                    request_from,
                    mirror,
                    headers,
-                   current_host,
                    search_string=None,
                    season=None,
                    episode=None,
@@ -218,6 +146,7 @@ def _parse_results(shared_state,
         f"(requester={request_from}, mirror={mirror})"
     )
 
+    current_host = password
     metadata_cache = {}
 
     for card in cards:
@@ -261,22 +190,6 @@ def _parse_results(shared_state,
 
             time_tag = card.find("time")
             published = time_tag.get_text(strip=True) if time_tag else ""
-            from datetime import datetime, timezone, timedelta
-
-            mois_fr = {
-                "janvier": "01", "février": "02", "mars": "03", "avril": "04",
-                "mai": "05", "juin": "06", "juillet": "07", "août": "08",
-                "septembre": "09", "octobre": "10", "novembre": "11", "décembre": "12"
-            }
-
-            def parse_date_fr(date_str, heure="14:34:00", offset_hours=1):
-                jour, mois, annee = date_str.split(" ")
-                mois_num = mois_fr[mois.lower()]
-                
-                dt = datetime.fromisoformat(f"{annee}-{mois_num}-{jour}T{heure}")
-                tz = timezone(timedelta(hours=offset_hours))
-                dt = dt.replace(tzinfo=tz)
-                return dt.isoformat()
 
             detail_year = ""
             detail_size_mb = 0
@@ -290,27 +203,28 @@ def _parse_results(shared_state,
                         headers,
                         current_host,
                     )
-                    info("metadata_cache "+str(metadata_cache))
-                updated_host, detail_year, detail_size_mb,title = metadata_cache[source]
+
+                updated_host, detail_year, detail_size_mb = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
                     release_host = updated_host
+
+            if detail_year:
+                published = detail_year
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
             title_with_quality = title
-            info("title "+title)
-            if quality and title is None:
-                title_with_quality = f"{title} {detail_year} {quality}".strip()
-                final_title = _normalize_title(title_with_quality)
-            else:
-                final_title = _normalize_title(title)
-            info("final_title "+final_title)
+            if quality:
+                title_with_quality = f"{title} {quality}".strip()
+
+            final_title = _normalize_title(title_with_quality)
+
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
-                f"{final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                f"{final_title}|{source}|{mirror}|{mb}|{release_host}|{release_imdb_id}".encode("utf-8")
             ).decode("utf-8")
 
             link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
@@ -327,7 +241,7 @@ def _parse_results(shared_state,
                     "link": link,
                     "mirror": mirror,
                     "size": size_bytes,
-                    "date": parse_date_fr(published),
+                    "date": published,
                     "source": source,
                 },
                 "type": "protected",
@@ -343,13 +257,13 @@ def _parse_results(shared_state,
 def _get_category(request_from):
     rf = (request_from or "").lower()
     if "radarr" in rf:
-        return ["films","autres-videos"]
+        return "films"
     if "postman" in rf:
-        return ["films"]
+        return "films"
     if "sonarr" in rf:
         if "anime" in rf or "animé" in rf or "manga" in rf:
-            return ["mangas"]
-        return ["series"]
+            return "mangas"
+        return "series"
     return None
 
 
@@ -364,51 +278,51 @@ def _get_newznab_category_id(request_from):
     return None
 
 
-def zt_feed(shared_state, start_time, request_from, mirror=None):
+def me_feed(shared_state, start_time, request_from, mirror=None):
     releases = []
-    categories = _get_category(request_from)
-    if not categories:
+    category = _get_category(request_from)
+    if not category:
         debug(f"Skipping {hostname.upper()} feed for unsupported requester '{request_from}'.")
         return releases
 
     config = shared_state.values["config"]("Hostnames")
-    zt = config.get(hostname)
-    if not zt:
+    me = config.get(hostname)
+    if not me:
         info(f"{hostname.upper()} host missing in configuration. Feed aborted for requester '{request_from}'.")
         return releases
-    releases_all = []
-    for category in categories:
 
-        url = f"https://{zt}/?p={category}"
-        headers = {"User-Agent": shared_state.values["user_agent"]}
+    password = me
+    url = f"https://{me}/?p={category}"
+    headers = {"User-Agent": shared_state.values["user_agent"]}
 
-        info(
-            f"{hostname.upper()} feed request for category '{category}' "
-            f"(mirror={mirror}) using host '{zt}'"
-        )
+    info(
+        f"{hostname.upper()} feed request for category '{category}' "
+        f"(mirror={mirror}) using host '{me}'"
+    )
 
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            zt = _update_hostname(shared_state, zt, response.url)
-            soup = BeautifulSoup(response.text, "html.parser")
-            releases = _parse_results(shared_state,
-                                    soup,
-                                    response.url,
-                                    request_from,
-                                    mirror,
-                                    headers,zt)
-            releases_all.extend(releases)
-        except Exception as exc:
-            message = f"Error loading {hostname.upper()} feed: {exc}"
-            info(message)
-            raise RuntimeError(message) from exc
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        me = _update_hostname(shared_state, me, response.url)
+        password = me
+        soup = BeautifulSoup(response.text, "html.parser")
+        releases = _parse_results(shared_state,
+                                  soup,
+                                  response.url,
+                                  password,
+                                  request_from,
+                                  mirror,
+                                  headers)
+    except Exception as exc:
+        message = f"Error loading {hostname.upper()} feed: {exc}"
+        info(message)
+        raise RuntimeError(message) from exc
 
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
-    return releases_all
+    return releases
 
 
-def zt_search(shared_state,
+def me_search(shared_state,
               start_time,
               request_from,
               search_string,
@@ -416,17 +330,18 @@ def zt_search(shared_state,
               season=None,
               episode=None):
     releases = []
-    categories = _get_category(request_from)
-    if not categories:
+    category = _get_category(request_from)
+    if not category:
         debug(f"Skipping {hostname.upper()} search for unsupported requester '{request_from}'.")
         return releases
 
     config = shared_state.values["config"]("Hostnames")
-    zt = config.get(hostname)
-    if not zt:
+    me = config.get(hostname)
+    if not me:
         info(f"{hostname.upper()} host missing in configuration. Search aborted for '{search_string}'.")
         return releases
 
+    password = me
 
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
@@ -436,40 +351,36 @@ def zt_search(shared_state,
             return releases
         search_string = html.unescape(localized)
 
-    q = quote_plus(search_string)[:32]
-    releases_all = []
-    for category in categories:
-        url = f"https://{zt}/?p={category}&search={q}"
-        headers = {"User-Agent": shared_state.values["user_agent"]}
+    q = quote_plus(search_string)
+    url = f"https://{me}/?p={category}&search={q}"
+    headers = {"User-Agent": shared_state.values["user_agent"]}
 
-        info(
-            f"{hostname.upper()} search request for '{search_string}' "
-            f"(category={category}, mirror={mirror}) using host '{zt}'"
-        )
+    info(
+        f"{hostname.upper()} search request for '{search_string}' "
+        f"(category={category}, mirror={mirror}) using host '{me}'"
+    )
 
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            zt = _update_hostname(shared_state, zt, response.url)
-            current_host = zt
-            soup = BeautifulSoup(response.text, "html.parser")
-            releases = _parse_results(shared_state,
-                                    soup,
-                                    response.url,
-                                    request_from,
-                                    mirror,
-                                    headers,
-                                    current_host= current_host,
-                                    search_string=search_string,
-                                    season=season,
-                                    episode=episode,
-                                    imdb_id=imdb_id)
-            releases_all.extend(releases)
-        except Exception as exc:
-            message = f"Error loading {hostname.upper()} search: {exc}"
-            info(message)
-            raise RuntimeError(message) from exc
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        me = _update_hostname(shared_state, me, response.url)
+        password = me
+        soup = BeautifulSoup(response.text, "html.parser")
+        releases = _parse_results(shared_state,
+                                  soup,
+                                  response.url,
+                                  password,
+                                  request_from,
+                                  mirror,
+                                  headers,
+                                  search_string=search_string,
+                                  season=season,
+                                  episode=episode,
+                                  imdb_id=imdb_id)
+    except Exception as exc:
+        message = f"Error loading {hostname.upper()} search: {exc}"
+        info(message)
+        raise RuntimeError(message) from exc
 
-    
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
-    return releases_all
+    return releases

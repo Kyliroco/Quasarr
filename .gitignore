@@ -14,3 +14,4 @@ venv
 *.conf
 *.db
 *.ini
+test.py

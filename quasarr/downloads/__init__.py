@@ -18,6 +18,7 @@ from quasarr.downloads.sources.nx import get_nx_download_links
 from quasarr.downloads.sources.sf import get_sf_download_links, resolve_sf_redirect
 from quasarr.downloads.sources.sl import get_sl_download_links
 from quasarr.downloads.sources.wd import get_wd_download_links
+from quasarr.downloads.sources.zt import get_zt_download_links
 from quasarr.providers.log import info
 from quasarr.providers.notifications import send_discord_message
 from quasarr.providers.statistics import StatsHelper
@@ -137,7 +138,6 @@ def handle_wd(shared_state, title, password, package_id, imdb_id, url, mirror, s
         label='WD'
     )
 
-
 def download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id=None):
     if "lazylibrarian" in request_from.lower():
         category = "docs"
@@ -162,7 +162,8 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
         'NX': config.get("nx"),
         'SF': config.get("sf"),
         'SL': config.get("sl"),
-        'WD': config.get("wd")
+        'WD': config.get("wd"),
+        'ZT': config.get("zt")
     }
 
     handlers = [
@@ -176,6 +177,7 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
         (flags['SF'], handle_sf),
         (flags['SL'], handle_sl),
         (flags['WD'], handle_wd),
+        (flags['ZT'], lambda *a: handle_unprotected(*a, func=get_zt_download_links, label='ZT')),
     ]
 
     for flag, fn in handlers:

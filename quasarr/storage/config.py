@@ -36,7 +36,8 @@ class Config(object):
             ("nx", "secret", ""),
             ("sf", "secret", ""),
             ("sl", "secret", ""),
-            ("wd", "secret", "")
+            ("wd", "secret", ""),
+            ("zt", "secret", "")
         ],
         'FlareSolverr': [
             ("url", "str", ""),
