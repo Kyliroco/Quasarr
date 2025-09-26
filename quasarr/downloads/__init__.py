@@ -146,8 +146,8 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
     else:
         category = "tv"
 
-    package_id = f"Quasarr_{category}_{str(hash(title + url)).replace('-', '')}"
-
+    package_id = f"SABnzbd_{category}_{str(hash(title + url)).replace('-', '')}"
+    info("package_id "+package_id)
     if imdb_id is not None and imdb_id.lower() == "none":
         imdb_id = None
 

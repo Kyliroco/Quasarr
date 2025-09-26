@@ -226,8 +226,9 @@ def _parse_results(shared_state,
             if not title_link:
                 debug(f"{hostname.upper()} skipping card without title link on {base_url}")
                 continue
-
+            info(title_link)
             title = title_link.get_text(strip=True)
+            info(title)
             if not title:
                 debug(f"{hostname.upper()} skipping card with empty title on {base_url}")
                 continue
@@ -431,44 +432,46 @@ def zt_search(shared_state,
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
         localized = get_localized_title(shared_state, imdb_id, 'fr')
+        info(localized)
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
         search_string = html.unescape(localized)
-
+        info(localized)
     q = quote_plus(search_string)[:32]
     releases_all = []
     for category in categories:
-        url = f"https://{zt}/?p={category}&search={q}"
-        headers = {"User-Agent": shared_state.values["user_agent"]}
+        for i in range(1,4):
+            url = f"https://{zt}/?p={category}&search={q}&page={i}"
+            headers = {"User-Agent": shared_state.values["user_agent"]}
 
-        info(
-            f"{hostname.upper()} search request for '{search_string}' "
-            f"(category={category}, mirror={mirror}) using host '{zt}'"
-        )
+            info(
+                f"{hostname.upper()} search request for '{search_string}' "
+                f"(category={category}, mirror={mirror}) using host '{zt}'"
+            )
 
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            zt = _update_hostname(shared_state, zt, response.url)
-            current_host = zt
-            soup = BeautifulSoup(response.text, "html.parser")
-            releases = _parse_results(shared_state,
-                                    soup,
-                                    response.url,
-                                    request_from,
-                                    mirror,
-                                    headers,
-                                    current_host= current_host,
-                                    search_string=search_string,
-                                    season=season,
-                                    episode=episode,
-                                    imdb_id=imdb_id)
-            releases_all.extend(releases)
-        except Exception as exc:
-            message = f"Error loading {hostname.upper()} search: {exc}"
-            info(message)
-            raise RuntimeError(message) from exc
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                zt = _update_hostname(shared_state, zt, response.url)
+                current_host = zt
+                soup = BeautifulSoup(response.text, "html.parser")
+                releases = _parse_results(shared_state,
+                                        soup,
+                                        response.url,
+                                        request_from,
+                                        mirror,
+                                        headers,
+                                        current_host= current_host,
+                                        search_string=search_string,
+                                        season=season,
+                                        episode=episode,
+                                        imdb_id=imdb_id)
+                releases_all.extend(releases)
+            except Exception as exc:
+                message = f"Error loading {hostname.upper()} search: {exc}"
+                info(message)
+                raise RuntimeError(message) from exc
 
     
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")

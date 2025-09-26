@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 from bottle import abort, request
 
 from quasarr.downloads import download
+from quasarr.downloads import packages
 from quasarr.downloads.packages import get_packages, delete_package
 from quasarr.providers import shared_state
 from quasarr.providers.log import info, debug
@@ -111,7 +112,7 @@ def setup_arr_routes(app):
                 nzo_ids.append(package_id)
             except KeyError:
                 info(f'Failed to download "{title}" - no package_id returned')
-
+        info("nzo_ids "+str(nzo_ids))
         return {
             "status": True,
             "nzo_ids": nzo_ids
@@ -261,6 +262,89 @@ def setup_arr_routes(app):
                                 "paused": False,
                                 "slots": packages.get("queue", [])
                             }
+                            # "queue": {
+                            #     "status": "Downloading",
+                            #     "speedlimit": "9",
+                            #     "speedlimit_abs": "4718592.0",
+                            #     "paused": "false",
+                            #     "noofslots_total": 2,
+                            #     "noofslots": 2,
+                            #     "limit": 10,
+                            #     "start": 0,
+                            #     "timeleft": "0:16:44",
+                            #     "speed": "1.3 M",
+                            #     "kbpersec": "1296.02",
+                            #     "size": "1.2 GB",
+                            #     "sizeleft": "1.2 GB",
+                            #     "mb": "1277.65",
+                            #     "mbleft": "1271.58",
+                            #     "slots": [
+                            #         {
+                            #             "status": "Downloading",
+                            #             "index": 0,
+                            #             "password": "",
+                            #             "avg_age": "2895d",
+                            #             "time_added": 1469172000,
+                            #             "script": "None",
+                            #             "direct_unpack": "10/30",
+                            #             "mb": "1277.65",
+                            #             "mbleft": "1271.59",
+                            #             "mbmissing": "0.0",
+                            #             "size": "1.2 GB",
+                            #             "sizeleft": "1.2 GB",
+                            #             "filename": "Maison.de.Retraite.2.2024.FRENCH.1080p.WEB.H264-FW.mkv.6.Go",
+                            #             "labels": [],
+                            #             "priority": "Normal",
+                            #             "cat": "movies",
+                            #             "timeleft": "0:16:44",
+                            #             "percentage": "0",
+                            #             "nzo_id": "SABnzbd_nzo_5097382902943060034",
+                            #             "unpackopts": "3"
+                            #         },
+                            #         {
+                            #             "status": "Paused",
+                            #             "index": 1,
+                            #             "password": "",
+                            #             "avg_age": "2895d",
+                            #             "time_added": 1469171000,
+                            #             "script": "None",
+                            #             "direct_unpack": "null",
+                            #             "mb": "1277.76",
+                            #             "mbleft": "1277.76",
+                            #             "mbmissing": "0.0",
+                            #             "size": "1.2 GB",
+                            #             "sizeleft": "1.2 GB",
+                            #             "filename": "TV.Show.S04E12.720p.HDTV.x264",
+                            #             "labels": [
+                            #                 "TOO LARGE",
+                            #                 "DUPLICATE"
+                            #             ],
+                            #             "priority": "Normal",
+                            #             "cat": "movies",
+                            #             "timeleft": "0:00:00",
+                            #             "percentage": "0",
+                            #             "nzo_id": "SABnzbd_nzo_7633437793811053511",
+                            #             "unpackopts": "3"
+                            #         }
+                            #     ],
+                            #     "diskspace1": "161.16",
+                            #     "diskspace2": "161.16",
+                            #     "diskspacetotal1": "465.21",
+                            #     "diskspacetotal2": "465.21",
+                            #     "diskspace1_norm": "161.2 G",
+                            #     "diskspace2_norm": "161.2 G",
+                            #     "have_warnings": "0",
+                            #     "pause_int": "0",
+                            #     "left_quota": "0 ",
+                            #     "version": "3.x.x",
+                            #     "finish": 2,
+                            #     "cache_art": "16",
+                            #     "cache_size": "6 MB",
+                            #     "finishaction": "null",
+                            #     "paused_all": "false",
+                            #     "quota": "0 ",
+                            #     "have_quota": "false",
+                            # }
                         }
                     elif mode == "history":
                         return {
