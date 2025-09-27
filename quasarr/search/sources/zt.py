@@ -226,9 +226,7 @@ def _parse_results(shared_state,
             if not title_link:
                 debug(f"{hostname.upper()} skipping card without title link on {base_url}")
                 continue
-            info(title_link)
             title = title_link.get_text(strip=True)
-            info(title)
             if not title:
                 debug(f"{hostname.upper()} skipping card with empty title on {base_url}")
                 continue
@@ -301,13 +299,11 @@ def _parse_results(shared_state,
             release_imdb_id = imdb_id
 
             title_with_quality = title
-            info("title "+title)
             if quality and title is None:
                 title_with_quality = f"{title} {detail_year} {quality}".strip()
                 final_title = _normalize_title(title_with_quality)
             else:
                 final_title = _normalize_title(title)
-            info("final_title "+final_title)
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
@@ -432,7 +428,6 @@ def zt_search(shared_state,
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
         localized = get_localized_title(shared_state, imdb_id, 'fr')
-        info(localized)
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases

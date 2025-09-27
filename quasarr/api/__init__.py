@@ -15,12 +15,14 @@ from quasarr.providers.html_templates import render_button, render_centered_html
 from quasarr.providers.web_server import Server
 from quasarr.storage.config import Config
 
+from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
 
 def get_api(shared_state_dict, shared_state_lock):
     shared_state.set_state(shared_state_dict, shared_state_lock)
 
     app = Bottle()
-
+    snapshotter = PackageSnapshotter(shared_state, interval=30).start()
+    app.config['snapshotter'] = snapshotter
     setup_arr_routes(app)
     setup_captcha_routes(app)
     setup_config(app, shared_state)

@@ -515,9 +515,7 @@ def sanitize_string(s):
 
 def search_string_in_sanitized_title(search_string, title):
     sanitized_search_string = sanitize_string(search_string)
-    info(title)
     sanitized_title = sanitize_string(title)
-    info(sanitized_title)
 
     # Use word boundaries to ensure full word/phrase match
     if re.search(rf'\b{re.escape(sanitized_search_string)}\b', sanitized_title):
@@ -607,7 +605,6 @@ def is_valid_release(title: str,
 
         # if search string is NOT an imdb id check search_string_in_sanitized_title - if not match, its not valid
         if not is_docs_search and not is_imdb_id(search_string):
-            info(title)
             if not search_string_in_sanitized_title(search_string, title):
                 debug(f"Skipping {title!r} as it doesn't match sanitized search string: {search_string!r}")
                 return False

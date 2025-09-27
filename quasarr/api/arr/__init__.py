@@ -2,6 +2,7 @@
 # Quasarr
 # Project by https://github.com/rix1337
 
+import threading
 import traceback
 import xml.sax.saxutils as sax_utils
 from base64 import urlsafe_b64decode
@@ -61,7 +62,6 @@ def setup_arr_routes(app):
             size_mb = decoded_payload[3]
             if len(decoded_payload) == 5:
                 imdb_id = decoded_payload[4]
-                info(f'<nzb><file title="{title}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="password" imdb_id="{imdb_id}"/></nzb>')
                 return f'''<nzb>
                     <file title="{title}"
                         url="{url}"
@@ -70,7 +70,6 @@ def setup_arr_routes(app):
             elif (len(decoded_payload) == 6):
                 password = decoded_payload[4]
                 imdb_id = decoded_payload[5]
-                info(f'<nzb><file title="{title}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="{password}" imdb_id="{imdb_id}"/></nzb>')
                 return f'<nzb><file title="{title}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="{password}" imdb_id="{imdb_id}"/></nzb>'
             else:
                 raise Exception("Le playload ne contient pas le bon nombre de paramètrès")
@@ -112,7 +111,6 @@ def setup_arr_routes(app):
                 nzo_ids.append(package_id)
             except KeyError:
                 info(f'Failed to download "{title}" - no package_id returned')
-        info("nzo_ids "+str(nzo_ids))
         return {
             "status": True,
             "nzo_ids": nzo_ids
@@ -122,8 +120,6 @@ def setup_arr_routes(app):
     @app.get('/api/<mirror>')
     @require_api_key
     def quasarr_api(mirror=None):
-        info("api")
-
         api_type = 'arr_download_client' if request.query.mode else 'arr_indexer' if request.query.t else None
 
         if api_type == 'arr_download_client':
@@ -185,7 +181,6 @@ def setup_arr_routes(app):
                         }
                     }
                 elif mode == "addurl":
-                    info("addurl")
                     raw_name = getattr(request.query, "name", None)
                     if not raw_name:
                         abort(400, "missing or empty 'name' parameter")
@@ -226,7 +221,8 @@ def setup_arr_routes(app):
                         password or None,
                         imdb_id or None,
                     )
-
+                    snap = request.app.config['snapshotter']
+                    threading.Thread(target=snap.force_refresh).start()
                     try:
                         success = downloaded["success"]
                         package_id = downloaded["package_id"]
@@ -246,7 +242,6 @@ def setup_arr_routes(app):
                     }
 
                 elif mode == "queue" or mode == "history":
-                    info("queue")
                     if request.query.name and request.query.name == "delete":
                         package_id = request.query.value
                         deleted = delete_package(shared_state, package_id)
@@ -255,7 +250,7 @@ def setup_arr_routes(app):
                             "nzo_ids": [package_id]
                         }
 
-                    packages = get_packages(shared_state)
+                    packages = get_packages()
                     if mode == "queue":
                         return {
                             "queue": {

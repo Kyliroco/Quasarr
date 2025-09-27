@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 from quasarr.providers.log import info, debug
 
 hostname = "zt"
-SUPPORTED_MIRRORS =["1fichier","dailyuploads"]
+UNSUPPORTED_MIRRORS =["nitroflare"]
 
 IGNORED_HOSTS = {
     "imdb.com",
@@ -185,7 +185,7 @@ def get_zt_download_links(shared_state, url, mirror, title):
                     hoster_name = netloc
 
             base_hoster:str = hoster_name
-            if base_hoster.lower() in SUPPORTED_MIRRORS:
+            if base_hoster.lower() not in UNSUPPORTED_MIRRORS:
                 if base_hoster.lower() in {zt.lower(), "dl-protect"}:
                     debug(f"{hostname.upper()} ignoring protected redirect hoster {base_hoster}")
                     continue
@@ -213,7 +213,6 @@ def get_zt_download_links(shared_state, url, mirror, title):
                     f"{hostname.upper()} accepted download link {absolute} with label '{display_name}'"
                 )
                 links.append([absolute, display_name])
-
     if not links:
         info(f"{hostname.upper()} site returned no recognizable download links for {title}.")
     else:
@@ -221,8 +220,278 @@ def get_zt_download_links(shared_state, url, mirror, title):
             f"{hostname.upper()} extracted {len(links)} download links for '{title}' "
             f"(imdb_id={imdb_id or 'unknown'})"
         )
-
+    for link in links:
+        final_link = get_final_links(link[0])
+        alive , rep = is_link_alive(final_link)
+        if alive:
+            info("lien trouvé" ,final_link)
+            break
+        else:
+            final_link=""
+    if final_link=="":
+        print("No links")
+        return{}
     return {
-        "links": links,
+        "links": [final_link],
         "imdb_id": imdb_id,
     }
+
+DEFAULT_TIMEOUT = 15
+
+def is_link_alive(url, session=None, timeout=DEFAULT_TIMEOUT, max_head_size=1024):
+    """
+    Teste si une URL de fichier est "vivante".
+    Retourne un tuple (alive:bool, info:dict)
+    info contient: status_code, reason, content_type, content_length, note
+    """
+    s = session or requests.Session()
+    s.headers.update({
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+    })
+
+    info = {"status_code": None, "reason": None, "content_type": None, "content_length": None, "note": None}
+    try:
+        # 1) quick HEAD
+        resp = s.head(url, allow_redirects=False, timeout=timeout)
+        info["status_code"] = resp.status_code
+        info["reason"] = resp.reason
+        info["content_type"] = resp.headers.get("Content-Type")
+        info["content_length"] = resp.headers.get("Content-Length")
+        # If HEAD gives a clear positive:
+        if 200 <= resp.status_code < 300:
+            # If it's binary (non-html) and has length -> very likely alive
+            ct = info["content_type"] or ""
+            if "text/html" not in ct.lower():
+                info["note"] = "HEAD OK and non-HTML content-type"
+                return True, info
+            # if HTML returned on HEAD, we need to inspect content (some hosts respond HTML even for files)
+        elif resp.status_code in (403, 401):
+            # Some hosts block HEAD; fallthrough to GET test
+            info["note"] = f"HEAD returned {resp.status_code}; trying GET"
+        elif resp.status_code in (404, 410):
+            info["note"] = "Not found according to HEAD"
+            return False, info
+        elif 300<= resp.status_code <400 :
+            parsed = urlparse(url)
+            hostname_base = parsed.hostname
+            parsed = urlparse(resp.headers["Location"])
+            hostname_redirection = parsed.hostname
+            if hostname_redirection == None:
+                return is_link_alive("https://"+hostname_base+resp.headers["Location"])
+            if hostname_base != hostname_redirection:
+                return is_link_alive(resp.headers["Location"])
+            info["note"] = "Redirection pas normal"
+            return False,info
+        else:
+            # other 3xx / 4xx / 5xx -> try GET for safety
+            info["note"] = f"HEAD returned {resp.status_code}; trying GET"
+    except requests.RequestException as e:
+        info["note"] = f"HEAD failed: {e}; trying GET"
+
+    # 2) Fallback: small GET to check body (use Range to avoid big download)
+    try:
+        headers = {"Range": f"bytes=0-{max_head_size-1}"}
+        resp = s.get(url, allow_redirects=True, timeout=timeout, headers=headers, stream=True)
+        info["status_code"] = resp.status_code
+        info["reason"] = resp.reason
+        info["content_type"] = resp.headers.get("Content-Type")
+        info["content_length"] = resp.headers.get("Content-Length")
+        body_snippet = resp.content[:max_head_size].decode('utf-8', errors='ignore').lower()
+
+        # common patterns indicating a dead link (customize per host)
+        dead_signatures = [
+            "file not found", "not found", "404", "no such file", "the file was removed",
+            "this file has been deleted", "error 404", "page not found", "no such user",
+        ]
+        # host specific quick checks (example: 1fichier returns HTML error message)
+        if resp.status_code in (200, 206):  # 206 if range supported
+            # if content-type is HTML and body contains error phrases -> dead
+            ct = (info["content_type"] or "").lower()
+            if "text/html" in ct:
+                for sig in dead_signatures:
+                    if sig in body_snippet:
+                        info["note"] = f"HTML page contains error signature: '{sig}'"
+                        return False, info
+                # otherwise could still be a valid download page (some hosts require JS)
+
+                if  "searching for the file" in resp.text.lower():
+                    info["note"] = "turbobit dont find"
+                    return False, info
+                info["note"] = "GET returned HTML but no obvious error signature"
+                return True, info
+            else:
+                info["note"] = "GET returned non-HTML (likely file) => alive"
+                return True, info
+        elif resp.status_code in (403, 401):
+            info["note"] = "Access denied (403/401)"
+            return False, info
+        elif resp.status_code in (404, 410):
+            info["note"] = "Not found (404/410)"
+            return False, info
+        else:
+            info["note"] = f"GET returned {resp.status_code}"
+            # consider dead for 5xx or unknown codes
+            return False, info
+    except requests.RequestException as e:
+        info["note"] = f"GET failed: {e}"
+        return False, info
+
+#!/usr/bin/env python3
+"""
+solve_and_extract_link.py
+
+Même principe que précédemment, mais main() renvoie (et affiche) le href du premier
+élément <a> dont l'attribut rel contient 'external' et 'nofollow'.
+
+Usage:
+  pip install requests beautifulsoup4
+  python3 solve_and_extract_link.py
+"""
+
+import time
+
+# ---------------- CONFIGURATION ----------------
+API_KEY = "e8afb42ed3de82c60392cfea55ecf555"                         # <-- remplace par ta clé 2captcha
+MAX_WAIT_SECONDS = 200                              # timeout max pour la résolution
+POLL_INTERVAL = 5                                   # intervalle de polling (s)
+# ------------------------------------------------
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+}
+
+def fetch_page(session: requests.Session, url: str):
+    r = session.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r.text, r.url  # renvoie HTML et URL finale (redirects possibles)
+
+def find_form_and_sitekey(html: str):
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Cherche d'abord un div Turnstile
+    div_turn = soup.find("div", class_="cf-turnstile")
+    if div_turn and div_turn.get("data-sitekey"):
+        return soup, div_turn.get("data-sitekey"), div_turn
+
+    # Sinon recherche reCAPTCHA / hCaptcha (fallback)
+    rec = soup.find(attrs={"data-sitekey": True})
+    if rec:
+        sk = rec.get("data-sitekey")
+        return soup, sk, rec
+
+    # Si pas trouvé
+    return soup, None, None
+
+def extract_form(soup: BeautifulSoup):
+    form = soup.find("form")
+    if not form:
+        raise RuntimeError("Aucun <form> trouvé sur la page.")
+    action = form.get("action") or ""
+    method = (form.get("method") or "GET").upper()
+    data = {}
+    for inp in form.find_all("input"):
+        name = inp.get("name")
+        if not name:
+            continue
+        value = inp.get("value", "")
+        data[name] = value
+    return form, action, method, data
+
+def submit_to_2captcha_turnstile(api_key: str, sitekey: str, pageurl: str):
+    in_url = "https://2captcha.com/in.php"
+    params = {
+        "key": api_key,
+        "method": "turnstile",
+        "pageurl": pageurl,
+        "sitekey": sitekey,
+        "json": 1
+    }
+    resp = requests.get(in_url, params=params, timeout=30)
+    j = resp.json()
+    if j.get("status") != 1:
+        raise RuntimeError(f"Erreur soumission 2Captcha: {j}")
+    return j["request"]  # id
+
+def poll_2captcha_result(api_key: str, captcha_id: str, max_wait: int = MAX_WAIT_SECONDS, poll_interval: int = POLL_INTERVAL):
+    res_url = "https://2captcha.com/res.php"
+    waited = 0
+    while waited < max_wait:
+        time.sleep(poll_interval)
+        waited += poll_interval
+        r = requests.get(res_url, params={"key": api_key, "action": "get", "id": captcha_id, "json": 1}, timeout=30)
+        j = r.json()
+        if j.get("status") == 1:
+            return j["request"]
+        if j.get("request") and j.get("request") != "CAPCHA_NOT_READY":
+            raise RuntimeError(f"Erreur 2Captcha pendant polling: {j}")
+    raise TimeoutError("Timeout waiting for 2Captcha result")
+
+def find_external_nofollow_href(html: str, base_url: str):
+    """
+    Retourne le href du premier <a> dont rel contient 'external' et 'nofollow'.
+    Si href est relatif, le convertit en URL absolue via base_url.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    # Parcours tous les <a> et vérifie l'attribut rel
+    for a in soup.find_all("a", href=True):
+        rel = a.get("rel")
+        if not rel:
+            # parfois rel est une string au lieu d'une liste
+            rel_attr = a.get("rel")
+        else:
+            rel_attr = rel
+        # normaliser en string pour test (ex: ['external','nofollow'] ou "external nofollow")
+        if isinstance(rel_attr, (list, tuple)):
+            rel_str = " ".join(rel_attr).lower()
+        else:
+            rel_str = str(rel_attr).lower()
+        # vérifier la présence des deux tokens
+        if "external" in rel_str and "nofollow" in rel_str:
+            href = a["href"]
+            return urljoin(base_url, href)
+    return None
+
+def get_final_links(url):
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    html, final_url = fetch_page(session, url)
+
+    soup, sitekey, _ = find_form_and_sitekey(html)
+    if not sitekey:
+        raise RuntimeError("Impossible de trouver de sitekey Turnstile / reCAPTCHA sur la page.")
+
+    form, action, method, form_data = extract_form(soup)
+    action_url = urljoin(final_url, action) if action else final_url
+
+    # Soumettre le captcha à 2captcha
+    captcha_id = submit_to_2captcha_turnstile(API_KEY, sitekey, final_url)
+
+    token = poll_2captcha_result(API_KEY, captcha_id, max_wait=MAX_WAIT_SECONDS, poll_interval=POLL_INTERVAL)
+
+    # Nom du champ Turnstile
+    field_name = "cf-turnstile-response"
+    if "cf-turnstile-response" in form_data:
+        field_name = "cf-turnstile-response"
+    elif "g-recaptcha-response" in form_data:
+        field_name = "g-recaptcha-response"
+
+    form_data[field_name] = token
+
+    if method == "POST":
+        resp = session.post(action_url, data=form_data, allow_redirects=True, timeout=60)
+    else:
+        resp = session.get(action_url, params=form_data, allow_redirects=True, timeout=60)
+
+
+    # Cherche le lien <a rel="external nofollow"> dans la réponse finale
+    href = find_external_nofollow_href(resp.text, resp.url)
+    if href:
+        info("[+] Lien trouvé :", href)
+    else:
+        info("[!] Aucun lien <a rel='external nofollow'> trouvé dans la réponse.")
+
+    # retourne le href (ou None)
+    return href
+
+
