@@ -9,7 +9,7 @@ import re
 import time
 import unicodedata
 from base64 import urlsafe_b64encode
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -463,6 +463,56 @@ def _build_final_title(title_source,
     return ".".join(filter(None, components))
 
 
+_EPISODE_TAG_REGEX = re.compile(r"(?i)S\d{1,3}E\d{1,3}")
+
+
+def _ensure_episode_tag(title, season, episode):
+    if not title:
+        return title
+
+    try:
+        season_num = int(season) if season is not None else None
+        episode_num = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        return title
+
+    if season_num is None or episode_num is None:
+        return title
+
+    if _EPISODE_TAG_REGEX.search(title):
+        return title
+
+    season_tag = f"S{season_num:02d}"
+    episode_tag = f"E{episode_num:02d}"
+
+    def _inject_episode(match):
+        return f"{match.group(0)}{episode_tag}"
+
+    season_pattern = re.compile(rf"(?i){re.escape(season_tag)}")
+    if season_pattern.search(title):
+        return season_pattern.sub(_inject_episode, title, count=1)
+
+    return f"{title}.{season_tag}{episode_tag}"
+
+
+def _attach_episode_fragment(url, episode):
+    try:
+        episode_num = int(episode)
+    except (TypeError, ValueError):
+        return url
+
+    parsed = urlparse(url)
+    fragments = []
+    if parsed.fragment:
+        fragments = [
+            frag for frag in parsed.fragment.split("&")
+            if frag and not frag.startswith("episode=")
+        ]
+    fragments.append(f"episode={episode_num}")
+    updated_fragment = "&".join(fragments)
+    return urlunparse(parsed._replace(fragment=updated_fragment))
+
+
 def _parse_results(shared_state,
                    soup,
                    base_url,
@@ -486,6 +536,16 @@ def _parse_results(shared_state,
     )
 
     metadata_cache = {}
+
+    try:
+        requested_season_num = int(season) if season is not None else None
+    except (TypeError, ValueError):
+        requested_season_num = None
+
+    try:
+        requested_episode_num = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        requested_episode_num = None
 
     for card in cards:
         try:
@@ -541,6 +601,7 @@ def _parse_results(shared_state,
                 continue
 
             source = urljoin(base_url, href)
+            payload_source = source
 
             time_tag = card.find("time")
             published = time_tag.get_text(strip=True) if time_tag else ""
@@ -566,6 +627,7 @@ def _parse_results(shared_state,
             detail_title = None
             detail_quality_tokens = []
             listing_title = title
+            detail_available_episodes = set()
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -603,6 +665,21 @@ def _parse_results(shared_state,
                             f"{episode} not found in detail page"
                         )
                         continue
+                    payload_source = _attach_episode_fragment(source, requested_episode)
+                elif (
+                    request_is_sonarr
+                    and requested_episode_num is not None
+                    and detail_available_episodes
+                    and requested_episode_num in detail_available_episodes
+                ):
+                    payload_source = _attach_episode_fragment(source, requested_episode_num)
+
+            if (
+                request_is_sonarr
+                and requested_episode_num is not None
+                and payload_source == source
+            ):
+                payload_source = _attach_episode_fragment(source, requested_episode_num)
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
@@ -622,16 +699,20 @@ def _parse_results(shared_state,
                 detail_quality_tokens,
                 quality,
             )
+            if request_is_sonarr and requested_episode_num is not None:
+                final_title = _ensure_episode_tag(
+                    final_title, requested_season_num, requested_episode_num
+                )
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
-                f"{final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                f"{final_title}|{payload_source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
             ).decode("utf-8")
 
             link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
 
             debug(
-                f"{hostname.upper()} prepared release '{final_title}' with source {source}"
+                f"{hostname.upper()} prepared release '{final_title}' with source {payload_source}"
             )
 
             releases.append({
@@ -643,7 +724,7 @@ def _parse_results(shared_state,
                     "mirror": mirror,
                     "size": size_bytes,
                     "date": parse_date_fr(published),
-                    "source": source,
+                    "source": payload_source,
                 },
                 "type": "protected",
             })
@@ -657,10 +738,14 @@ def _parse_results(shared_state,
                     detail_quality_tokens,
                     quality,
                 )
+                if request_is_sonarr and requested_episode_num is not None:
+                    stripped_final_title = _ensure_episode_tag(
+                        stripped_final_title, requested_season_num, requested_episode_num
+                    )
 
                 if stripped_final_title and stripped_final_title != final_title:
                     stripped_payload = urlsafe_b64encode(
-                        f"{stripped_final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                        f"{stripped_final_title}|{payload_source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
                     ).decode("utf-8")
 
                     stripped_link = (
@@ -676,7 +761,7 @@ def _parse_results(shared_state,
                             "mirror": mirror,
                             "size": size_bytes,
                             "date": parse_date_fr(published),
-                            "source": source,
+                            "source": payload_source,
                         },
                         "type": "protected",
                     })
