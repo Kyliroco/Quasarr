@@ -7,6 +7,7 @@
 import html
 import re
 import time
+import unicodedata
 from base64 import urlsafe_b64encode
 from urllib.parse import quote_plus, urljoin, urlparse
 
@@ -702,45 +703,70 @@ def zt_search(shared_state,
             return releases
         search_string = html.unescape(localized)
         debug(localized)
-    # The Zone-Téléchargement search form limits inputs to 32 characters.
-    # Apply the same limit *before* percent-encoding so multibyte characters
-    # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
-    limited_search = search_string[:32]
-    q = quote_plus(limited_search)
-    releases_all = []
-    for category in categories:
-        for i in range(1,4):
-            url = f"https://{zt}/?p={category}&search={q}&page={i}"
-            headers = {"User-Agent": shared_state.values["user_agent"]}
+    def _strip_diacritics(text):
+        if not text:
+            return text
+        normalized = unicodedata.normalize("NFD", text)
+        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
 
-            debug(
-                f"{hostname.upper()} search request for '{search_string}' "
-                f"(category={category}, mirror={mirror}) using host '{zt}'"
-            )
+    seen_links = set()
+    aggregated_releases = []
 
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                zt = _update_hostname(shared_state, zt, response.url)
-                current_host = zt
-                soup = BeautifulSoup(response.text, "html.parser")
-                releases = _parse_results(shared_state,
-                                        soup,
-                                        response.url,
-                                        request_from,
-                                        mirror,
-                                        headers,
-                                        current_host= current_host,
-                                        search_string=search_string,
-                                        season=season,
-                                        episode=episode,
-                                        imdb_id=imdb_id)
-                releases_all.extend(releases)
-            except Exception as exc:
-                message = f"Error loading {hostname.upper()} search: {exc}"
-                info(message)
-                raise RuntimeError(message) from exc
+    def perform_query(raw_query):
+        nonlocal zt
 
-    
+        # The Zone-Téléchargement search form limits inputs to 32 characters.
+        # Apply the same limit *before* percent-encoding so multibyte characters
+        # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
+        limited_search = (raw_query or "")[:32]
+        q = quote_plus(limited_search)
+
+        for category in categories:
+            for i in range(1, 4):
+                url = f"https://{zt}/?p={category}&search={q}&page={i}"
+                headers = {"User-Agent": shared_state.values["user_agent"]}
+
+                debug(
+                    f"{hostname.upper()} search request for '{raw_query}' "
+                    f"(category={category}, mirror={mirror}) using host '{zt}'"
+                )
+
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    zt = _update_hostname(shared_state, zt, response.url)
+                    current_host = zt
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    found = _parse_results(
+                        shared_state,
+                        soup,
+                        response.url,
+                        request_from,
+                        mirror,
+                        headers,
+                        current_host=current_host,
+                        search_string=raw_query,
+                        season=season,
+                        episode=episode,
+                        imdb_id=imdb_id,
+                    )
+                    for release in found:
+                        link = release.get("details", {}).get("link")
+                        if link:
+                            if link in seen_links:
+                                continue
+                            seen_links.add(link)
+                        aggregated_releases.append(release)
+                except Exception as exc:
+                    message = f"Error loading {hostname.upper()} search: {exc}"
+                    info(message)
+                    raise RuntimeError(message) from exc
+
+    perform_query(search_string)
+
+    accentless = _strip_diacritics(search_string)
+    if accentless and accentless != search_string:
+        perform_query(accentless)
+
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
-    return releases_all
+    return aggregated_releases
