@@ -533,7 +533,7 @@ def sanitize_string(s):
     s = re.sub(r'\bs\d{1,3}(e\d{1,3})?\b', '', s)
 
     # Remove German and English articles
-    articles = r'\b(?:der|die|das|ein|eine|einer|eines|einem|einen|the|a|an|and)\b'
+    articles = r'\b(?:der|die|das|ein|eine|einer|eines|einem|einen|the|a|an|and|et)\b'
     s = re.sub(articles, '', s, re.IGNORECASE)
 
     # Replace obsolete titles
