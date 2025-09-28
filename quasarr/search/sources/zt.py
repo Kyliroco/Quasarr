@@ -107,11 +107,12 @@ def _extract_year_from_highlight(soup):
         return ""
 
     matches = []
+    year_pattern = re.compile(r"(?:19|20)\d{2}")
     for highlight in soup.find_all("font", {"color": "red"}):
         text = highlight.get_text(" ", strip=True)
         if not text:
             continue
-        matches.extend(re.findall(r"(19|20)\d{2}", text))
+        matches.extend(match.group(0) for match in year_pattern.finditer(text))
 
     if matches:
         return matches[-1]
