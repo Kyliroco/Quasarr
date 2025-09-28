@@ -209,6 +209,115 @@ def _contains_year_token(text, year):
     return re.search(pattern, text) is not None
 
 
+LANGUAGE_MARKERS = {
+    "french",
+    "truefrench",
+    "multi",
+    "vostfr",
+    "vff",
+    "vf",
+    "vo",
+    "english",
+    "eng",
+    "subfrench",
+}
+
+QUALITY_MARKERS = {
+    "dvdrip",
+    "bdrip",
+    "hdrip",
+    "brrip",
+    "bluray",
+    "hdtv",
+    "webrip",
+    "webdl",
+    "web-dl",
+    "hddvd",
+    "uhd",
+    "hds",
+    "cam",
+    "ts",
+    "hdtc",
+    "hdlight",
+    "light",
+    "remux",
+}
+
+CODEC_MARKERS = {
+    "xvid",
+    "x264",
+    "x265",
+    "h264",
+    "h265",
+    "hevc",
+    "av1",
+    "divx",
+}
+
+CONTAINER_MARKERS = {
+    "avi",
+    "mkv",
+    "mp4",
+    "mov",
+}
+
+AUDIO_MARKERS = {
+    "aac",
+    "ac3",
+    "dts",
+    "truehd",
+    "atmos",
+    "flac",
+}
+
+RESOLUTION_PATTERN = re.compile(r"^(?:\d{3,4}p|4k|8k|2160p|1080p|720p|480p)$", re.IGNORECASE)
+BIT_DEPTH_PATTERN = re.compile(r"^(?:10bit|8bit)$", re.IGNORECASE)
+
+
+def _tokenize_title(text):
+    if not text:
+        return []
+
+    tokens = re.split(r"[\s._\-]+", text)
+    cleaned = []
+    for token in tokens:
+        stripped = token.strip().strip("()[]{}")
+        if stripped:
+            cleaned.append(stripped)
+    return cleaned
+
+
+def _quality_insert_index(tokens):
+    for idx, token in enumerate(tokens):
+        lower = token.lower()
+        if (
+            lower in LANGUAGE_MARKERS
+            or lower in QUALITY_MARKERS
+            or lower in CODEC_MARKERS
+            or lower in CONTAINER_MARKERS
+            or lower in AUDIO_MARKERS
+            or RESOLUTION_PATTERN.match(token)
+            or BIT_DEPTH_PATTERN.match(token)
+            or any(marker in lower for marker in ("4k", "2160p", "1080p", "720p", "480p", "hdr", "light"))
+        ):
+            return idx
+    return len(tokens)
+
+
+def _merge_quality_tokens(base_tokens, quality_text):
+    quality_tokens = _tokenize_title(quality_text)
+    if not quality_tokens:
+        return base_tokens
+
+    existing = {token.lower() for token in base_tokens}
+    merged = list(base_tokens)
+    for token in quality_tokens:
+        if token.lower() not in existing:
+            merged.append(token)
+            existing.add(token.lower())
+    return merged
+
+
 def _parse_results(shared_state,
                    soup,
                    base_url,
@@ -311,20 +420,29 @@ def _parse_results(shared_state,
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
-            title_parts = []
-            if title:
-                title_parts.append(title)
+            raw_tokens = _tokenize_title(title) if title else []
+            if not raw_tokens:
+                raw_tokens = _tokenize_title(quality)
 
-            base_text = " ".join(filter(None, [title, quality]))
-            if detail_year and not _contains_year_token(base_text, detail_year):
-                title_parts.append(detail_year)
+            final_tokens = list(raw_tokens)
+            combined_for_year = list(raw_tokens)
+            if quality:
+                combined_for_year.extend(_tokenize_title(quality))
+
+            if detail_year and raw_tokens and not _contains_year_token(" ".join(combined_for_year), detail_year):
+                insert_at = _quality_insert_index(raw_tokens)
+                final_tokens = raw_tokens[:insert_at] + [detail_year] + raw_tokens[insert_at:]
 
             if quality:
-                title_parts.append(quality)
+                final_tokens = _merge_quality_tokens(final_tokens, quality)
 
-            combined_title = " ".join(title_parts).strip()
-            fallback_title = title or ""
-            final_title = _normalize_title(combined_title or fallback_title)
+            if not final_tokens and title:
+                final_tokens = _tokenize_title(title)
+
+            fallback_title = title or quality or ""
+            final_title = _normalize_title(" ".join(final_tokens)) if final_tokens else _normalize_title(fallback_title)
+            if not final_title:
+                final_title = _normalize_title(fallback_title or "zt")
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
