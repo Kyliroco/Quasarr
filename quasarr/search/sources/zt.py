@@ -146,35 +146,85 @@ def _extract_size_mb(shared_state, text):
             continue
 
     return 0
-def _extract_title(soup):
+def _extract_detail_title(soup):
+    if not soup:
+        return None
+
+    title_tag = soup.find("h1")
+    if title_tag:
+        text = title_tag.get_text(strip=True)
+        if text:
+            return text
+
     font_red = soup.find("font", {"color": "red"})
-    titre = font_red.get_text(strip=True) if font_red else None
-    return titre
+    if font_red:
+        text = font_red.get_text(strip=True)
+        if text:
+            return text
+    return None
+
+
+def _extract_quality_language_tokens(soup):
+    if not soup:
+        return []
+
+    def is_quality_tag(tag):
+        if tag.name not in {"div", "span", "p"}:
+            return False
+        text = tag.get_text(" ", strip=True)
+        lowered = text.lower()
+        return bool(text) and (lowered.startswith("qualité") or lowered.startswith("qualite"))
+
+    quality_tag = soup.find(is_quality_tag)
+    if not quality_tag:
+        return []
+
+    text = quality_tag.get_text(" ", strip=True)
+    match = re.search(r"qualit(?:é|e)\s*[:\-]?\s*(.+)", text, re.IGNORECASE)
+    if not match:
+        return []
+
+    remainder = match.group(1).strip()
+    if not remainder:
+        return []
+
+    parts = [part.strip(" -") for part in remainder.split("|")]
+    tokens = []
+    for part in parts:
+        cleaned = re.sub(r"[()\[\]]", "", part).strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"\s+", ".", cleaned)
+        if cleaned:
+            tokens.append(cleaned)
+    return tokens
 
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
     production_year = ""
     size_mb = 0
     detail_title = None
+    quality_tokens = []
 
     if not source_url:
-        return updated_host, production_year, size_mb, detail_title
+        return updated_host, production_year, size_mb, detail_title, quality_tokens
 
     try:
         response = requests.get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
-        return updated_host, production_year, size_mb, detail_title
+        return updated_host, production_year, size_mb, detail_title, quality_tokens
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
 
     try:
         detail_soup = BeautifulSoup(response.text, "html.parser")
         text = detail_soup.get_text(" ", strip=True)
-        title = _extract_title(detail_soup)
+        title = _extract_detail_title(detail_soup)
         production_year = _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
+        quality_tokens = _extract_quality_language_tokens(detail_soup)
         if production_year:
             debug(
                 f"{hostname.upper()} extracted production year '{production_year}' from {response.url}"
@@ -188,7 +238,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb, detail_title
+    return updated_host, production_year, size_mb, detail_title, quality_tokens
 
 
 def _normalize_title(title):
@@ -209,71 +259,6 @@ def _contains_year_token(text, year):
     return re.search(pattern, text) is not None
 
 
-LANGUAGE_MARKERS = {
-    "french",
-    "truefrench",
-    "multi",
-    "vostfr",
-    "vff",
-    "vf",
-    "vo",
-    "english",
-    "eng",
-    "subfrench",
-}
-
-QUALITY_MARKERS = {
-    "dvdrip",
-    "bdrip",
-    "hdrip",
-    "brrip",
-    "bluray",
-    "hdtv",
-    "webrip",
-    "webdl",
-    "web-dl",
-    "hddvd",
-    "uhd",
-    "hds",
-    "cam",
-    "ts",
-    "hdtc",
-    "hdlight",
-    "light",
-    "remux",
-}
-
-CODEC_MARKERS = {
-    "xvid",
-    "x264",
-    "x265",
-    "h264",
-    "h265",
-    "hevc",
-    "av1",
-    "divx",
-}
-
-CONTAINER_MARKERS = {
-    "avi",
-    "mkv",
-    "mp4",
-    "mov",
-}
-
-AUDIO_MARKERS = {
-    "aac",
-    "ac3",
-    "dts",
-    "truehd",
-    "atmos",
-    "flac",
-}
-
-RESOLUTION_PATTERN = re.compile(r"^(?:\d{3,4}p|4k|8k|2160p|1080p|720p|480p)$", re.IGNORECASE)
-BIT_DEPTH_PATTERN = re.compile(r"^(?:10bit|8bit)$", re.IGNORECASE)
-
-
 def _tokenize_title(text):
     if not text:
         return []
@@ -287,72 +272,30 @@ def _tokenize_title(text):
     return cleaned
 
 
-def _quality_insert_index(tokens):
-    for idx, token in enumerate(tokens):
-        lower = token.lower()
-        if (
-            lower in LANGUAGE_MARKERS
-            or lower in QUALITY_MARKERS
-            or lower in CODEC_MARKERS
-            or lower in CONTAINER_MARKERS
-            or lower in AUDIO_MARKERS
-            or RESOLUTION_PATTERN.match(token)
-            or BIT_DEPTH_PATTERN.match(token)
-            or any(marker in lower for marker in ("4k", "2160p", "1080p", "720p", "480p", "hdr", "light"))
-        ):
-            return idx
-    return len(tokens)
+def _extract_year_from_tokens(tokens):
+    if not tokens:
+        return ""
+
+    for token in reversed(tokens):
+        if re.fullmatch(r"19\d{2}|20\d{2}", token):
+            return token
+    return ""
 
 
-def _merge_quality_tokens(base_tokens, quality_text):
-    quality_tokens = _tokenize_title(quality_text)
-    if not quality_tokens:
-        return base_tokens
+def _append_component(components, seen, component):
+    if not component:
+        return
 
-    existing = {token.lower() for token in base_tokens}
-    merged = list(base_tokens)
-    for token in quality_tokens:
-        if token.lower() not in existing:
-            merged.append(token)
-            existing.add(token.lower())
-    return merged
+    normalized = _normalize_title(component)
+    if not normalized:
+        return
 
+    key = normalized.lower()
+    if key in seen:
+        return
 
-def _ensure_year_position(tokens, detail_year, raw_tokens):
-    if not tokens or not detail_year:
-        return tokens
-
-    target = detail_year.strip()
-    try:
-        year_index = next(idx for idx, token in enumerate(tokens) if token == target)
-    except StopIteration:
-        return tokens
-
-    raw_tokens = raw_tokens or []
-    if raw_tokens:
-        name_boundary = _quality_insert_index(raw_tokens)
-        if name_boundary == 0:
-            name_boundary = len(raw_tokens)
-    else:
-        name_boundary = 0
-
-    insert_at = min(name_boundary, len(tokens)) if name_boundary else 0
-
-    if insert_at == 0 and raw_tokens:
-        insert_at = len(raw_tokens)
-
-    if insert_at >= len(tokens):
-        insert_at = len(tokens)
-
-    if year_index == insert_at or (insert_at > 0 and year_index == insert_at - 1):
-        return tokens
-
-    tokens = list(tokens)
-    year_token = tokens.pop(year_index)
-    if year_index < insert_at:
-        insert_at -= 1
-    tokens.insert(insert_at, year_token)
-    return tokens
+    seen.add(key)
+    components.append(normalized)
 
 
 def _parse_results(shared_state,
@@ -437,7 +380,8 @@ def _parse_results(shared_state,
             detail_year = ""
             detail_size_mb = 0
             detail_title = None
-            release_host = current_host
+            detail_quality_tokens = []
+            listing_title = title
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -447,42 +391,51 @@ def _parse_results(shared_state,
                         headers,
                         current_host,
                     )
-                updated_host, detail_year, detail_size_mb, detail_title = metadata_cache[source]
+                (
+                    updated_host,
+                    detail_year,
+                    detail_size_mb,
+                    detail_title,
+                    detail_quality_tokens,
+                ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
-                    release_host = updated_host
                 if detail_title:
                     title = detail_title
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
-            raw_tokens = _tokenize_title(title) if title else []
-            if not raw_tokens:
-                raw_tokens = _tokenize_title(quality)
+            listing_tokens = _tokenize_title(listing_title)
+            release_year = _extract_year_from_tokens(listing_tokens)
+            if not release_year and quality:
+                release_year = _extract_year_from_tokens(_tokenize_title(quality))
+            if not release_year:
+                release_year = detail_year
 
-            final_tokens = list(raw_tokens)
-            combined_for_year = list(raw_tokens)
-            if quality:
-                combined_for_year.extend(_tokenize_title(quality))
+            components = []
+            seen_components = set()
 
-            if detail_year and raw_tokens and not _contains_year_token(" ".join(combined_for_year), detail_year):
-                insert_at = _quality_insert_index(raw_tokens)
-                final_tokens = raw_tokens[:insert_at] + [detail_year] + raw_tokens[insert_at:]
+            title_source = title or listing_title or ""
+            title_normalized = _normalize_title(title_source) if title_source else ""
+            if title_normalized:
+                _append_component(components, seen_components, title_source)
 
-            if quality:
-                final_tokens = _merge_quality_tokens(final_tokens, quality)
+            if release_year and not _contains_year_token(title_normalized, release_year):
+                _append_component(components, seen_components, release_year)
 
-            if detail_year:
-                final_tokens = _ensure_year_position(final_tokens, detail_year, raw_tokens)
+            quality_components = detail_quality_tokens if detail_quality_tokens else []
+            if not quality_components and quality:
+                quality_components = _tokenize_title(quality)
 
-            if not final_tokens and title:
-                final_tokens = _tokenize_title(title)
+            for token in quality_components:
+                _append_component(components, seen_components, token)
 
-            fallback_title = title or quality or ""
-            final_title = _normalize_title(" ".join(final_tokens)) if final_tokens else _normalize_title(fallback_title)
-            if not final_title:
-                final_title = _normalize_title(fallback_title or "zt")
+            if not components:
+                fallback_title = title or listing_title or quality or "zt"
+                _append_component(components, seen_components, fallback_title)
+
+            final_title = ".".join(filter(None, components))
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
