@@ -318,6 +318,43 @@ def _merge_quality_tokens(base_tokens, quality_text):
     return merged
 
 
+def _ensure_year_position(tokens, detail_year, raw_tokens):
+    if not tokens or not detail_year:
+        return tokens
+
+    target = detail_year.strip()
+    try:
+        year_index = next(idx for idx, token in enumerate(tokens) if token == target)
+    except StopIteration:
+        return tokens
+
+    raw_tokens = raw_tokens or []
+    if raw_tokens:
+        name_boundary = _quality_insert_index(raw_tokens)
+        if name_boundary == 0:
+            name_boundary = len(raw_tokens)
+    else:
+        name_boundary = 0
+
+    insert_at = min(name_boundary, len(tokens)) if name_boundary else 0
+
+    if insert_at == 0 and raw_tokens:
+        insert_at = len(raw_tokens)
+
+    if insert_at >= len(tokens):
+        insert_at = len(tokens)
+
+    if year_index == insert_at or (insert_at > 0 and year_index == insert_at - 1):
+        return tokens
+
+    tokens = list(tokens)
+    year_token = tokens.pop(year_index)
+    if year_index < insert_at:
+        insert_at -= 1
+    tokens.insert(insert_at, year_token)
+    return tokens
+
+
 def _parse_results(shared_state,
                    soup,
                    base_url,
@@ -435,6 +472,9 @@ def _parse_results(shared_state,
 
             if quality:
                 final_tokens = _merge_quality_tokens(final_tokens, quality)
+
+            if detail_year:
+                final_tokens = _ensure_year_position(final_tokens, detail_year, raw_tokens)
 
             if not final_tokens and title:
                 final_tokens = _tokenize_title(title)
