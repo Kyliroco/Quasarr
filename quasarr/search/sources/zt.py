@@ -291,6 +291,15 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     return updated_host, production_year, size_mb, detail_title, quality_tokens
 
 
+def _strip_parenthetical_content(text):
+    if not text:
+        return text
+
+    # Remove any parenthetical segments and collapse leftover whitespace.
+    stripped = re.sub(r"\s*\([^)]*\)", "", text)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
 def _normalize_title(title):
     if not title:
         return title
@@ -374,6 +383,38 @@ def _append_component(components, seen, component):
 
     seen.add(key)
     components.append(normalized)
+
+
+def _build_final_title(title_source,
+                       listing_title,
+                       release_year,
+                       detail_quality_tokens,
+                       quality_text):
+    components = []
+    seen_components = set()
+
+    primary_title = title_source or listing_title or ""
+    normalized_primary = _normalize_title(primary_title) if primary_title else ""
+
+    if normalized_primary:
+        _append_component(components, seen_components, primary_title)
+
+    if release_year and not _contains_year_token(normalized_primary, release_year):
+        _append_component(components, seen_components, release_year)
+
+    quality_components = list(detail_quality_tokens or [])
+    if not quality_components and quality_text:
+        quality_components = _tokenize_title(quality_text)
+
+    for token in quality_components:
+        normalized_quality = _normalize_quality_token(token)
+        _append_component(components, seen_components, normalized_quality)
+
+    if not components:
+        fallback_title = primary_title or listing_title or quality_text or hostname
+        _append_component(components, seen_components, fallback_title)
+
+    return ".".join(filter(None, components))
 
 
 def _parse_results(shared_state,
@@ -491,30 +532,14 @@ def _parse_results(shared_state,
             if not release_year:
                 release_year = detail_year
 
-            components = []
-            seen_components = set()
-
             title_source = title or listing_title or ""
-            title_normalized = _normalize_title(title_source) if title_source else ""
-            if title_normalized:
-                _append_component(components, seen_components, title_source)
-
-            if release_year and not _contains_year_token(title_normalized, release_year):
-                _append_component(components, seen_components, release_year)
-
-            quality_components = detail_quality_tokens if detail_quality_tokens else []
-            if not quality_components and quality:
-                quality_components = _tokenize_title(quality)
-
-            for token in quality_components:
-                normalized_quality = _normalize_quality_token(token)
-                _append_component(components, seen_components, normalized_quality)
-
-            if not components:
-                fallback_title = title or listing_title or quality or "zt"
-                _append_component(components, seen_components, fallback_title)
-
-            final_title = ".".join(filter(None, components))
+            final_title = _build_final_title(
+                title_source,
+                listing_title,
+                release_year,
+                detail_quality_tokens,
+                quality,
+            )
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
@@ -540,6 +565,39 @@ def _parse_results(shared_state,
                 },
                 "type": "protected",
             })
+
+            stripped_title_source = _strip_parenthetical_content(title_source)
+            if stripped_title_source and stripped_title_source != title_source:
+                stripped_final_title = _build_final_title(
+                    stripped_title_source,
+                    listing_title,
+                    release_year,
+                    detail_quality_tokens,
+                    quality,
+                )
+
+                if stripped_final_title and stripped_final_title != final_title:
+                    stripped_payload = urlsafe_b64encode(
+                        f"{stripped_final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                    ).decode("utf-8")
+
+                    stripped_link = (
+                        f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
+                    )
+
+                    releases.append({
+                        "details": {
+                            "title": stripped_final_title,
+                            "hostname": hostname,
+                            "imdb_id": release_imdb_id,
+                            "link": stripped_link,
+                            "mirror": mirror,
+                            "size": size_bytes,
+                            "date": parse_date_fr(published),
+                            "source": source,
+                        },
+                        "type": "protected",
+                    })
         except Exception as exc:
             debug(f"Error parsing {hostname.upper()} card: {exc}")
             continue
