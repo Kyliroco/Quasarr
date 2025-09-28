@@ -155,16 +155,17 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
     production_year = ""
     size_mb = 0
+    detail_title = None
 
     if not source_url:
-        return updated_host, production_year, size_mb
+        return updated_host, production_year, size_mb, detail_title
 
     try:
         response = requests.get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
-        return updated_host, production_year, size_mb
+        return updated_host, production_year, size_mb, detail_title
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
 
@@ -182,10 +183,12 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             debug(
                 f"{hostname.upper()} extracted size {size_mb} MB from {response.url}"
             )
+        if title:
+            detail_title = title
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb,title
+    return updated_host, production_year, size_mb, detail_title
 
 
 def _normalize_title(title):
@@ -196,6 +199,14 @@ def _normalize_title(title):
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
     return normalized
+
+
+def _contains_year_token(text, year):
+    if not text or not year:
+        return False
+
+    pattern = rf"(?<!\d){re.escape(year)}(?!\d)"
+    return re.search(pattern, text) is not None
 
 
 def _parse_results(shared_state,
@@ -290,7 +301,6 @@ def _parse_results(shared_state,
                         headers,
                         current_host,
                     )
-                    info("metadata_cache "+str(metadata_cache))
                 updated_host, detail_year, detail_size_mb, detail_title = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
@@ -304,8 +314,11 @@ def _parse_results(shared_state,
             title_parts = []
             if title:
                 title_parts.append(title)
-            if detail_year:
+
+            base_text = " ".join(filter(None, [title, quality]))
+            if detail_year and not _contains_year_token(base_text, detail_year):
                 title_parts.append(detail_year)
+
             if quality:
                 title_parts.append(quality)
 
