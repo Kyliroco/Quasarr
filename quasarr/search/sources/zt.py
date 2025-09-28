@@ -279,6 +279,7 @@ def _parse_results(shared_state,
 
             detail_year = ""
             detail_size_mb = 0
+            detail_title = None
             release_host = current_host
 
             if headers is not None:
@@ -290,20 +291,27 @@ def _parse_results(shared_state,
                         current_host,
                     )
                     info("metadata_cache "+str(metadata_cache))
-                updated_host, detail_year, detail_size_mb,title = metadata_cache[source]
+                updated_host, detail_year, detail_size_mb, detail_title = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
                     release_host = updated_host
+                if detail_title:
+                    title = detail_title
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
-            title_with_quality = title
-            if quality and title is None:
-                title_with_quality = f"{title} {detail_year} {quality}".strip()
-                final_title = _normalize_title(title_with_quality)
-            else:
-                final_title = _normalize_title(title)
+            title_parts = []
+            if title:
+                title_parts.append(title)
+            if detail_year:
+                title_parts.append(detail_year)
+            if quality:
+                title_parts.append(quality)
+
+            combined_title = " ".join(title_parts).strip()
+            fallback_title = title or ""
+            final_title = _normalize_title(combined_title or fallback_title)
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
