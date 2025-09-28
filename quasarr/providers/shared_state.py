@@ -7,6 +7,7 @@ import os
 import re
 import time
 import traceback
+import unicodedata
 from datetime import datetime, timedelta, date
 from urllib import parse
 
@@ -479,14 +480,45 @@ def sanitize_title(title: str) -> str:
     return title
 
 
+_ROMAN_NUMERAL_MAP = {
+    'i': '1',
+    'ii': '2',
+    'iii': '3',
+    'iv': '4',
+    'v': '5',
+    'vi': '6',
+    'vii': '7',
+    'viii': '8',
+    'ix': '9',
+    'x': '10',
+    'xi': '11',
+    'xii': '12',
+    'xiii': '13',
+    'xiv': '14',
+    'xv': '15',
+    'xvi': '16',
+    'xvii': '17',
+    'xviii': '18',
+    'xix': '19',
+    'xx': '20',
+}
+
+
 def sanitize_string(s):
     s = s.lower()
+
+    # Strip diacritics to ensure accented characters normalize to their ASCII
+    # equivalents before we start removing punctuation. This keeps titles like
+    # "L'Élève" and "L'Elève" aligned during matching.
+    s = unicodedata.normalize("NFD", s)
+    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
 
     # Remove dots / pluses
     s = s.replace('.', ' ')
     s = s.replace('+', ' ')
     s = s.replace('_', ' ')
     s = s.replace('-', ' ')
+    s = s.replace('·', ' ')
 
     # Umlauts
     s = re.sub(r'ä', 'ae', s)
@@ -501,14 +533,34 @@ def sanitize_string(s):
     s = re.sub(r'\bs\d{1,3}(e\d{1,3})?\b', '', s)
 
     # Remove German and English articles
-    articles = r'\b(?:der|die|das|ein|eine|einer|eines|einem|einen|the|a|an|and)\b'
+    articles = r'\b(?:der|die|das|ein|eine|einer|eines|einem|einen|the|a|an|and|et)\b'
     s = re.sub(articles, '', s, re.IGNORECASE)
 
     # Replace obsolete titles
     s = s.replace('navy cis', 'ncis')
 
+    # Normalise standalone Roman numerals to digits for robust matching
+    tokens = s.split()
+    tokens = [_ROMAN_NUMERAL_MAP.get(token, token) for token in tokens]
+
+    cleaned_tokens = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token in {"vol", "volume"}:
+            next_token = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if next_token.isdigit():
+                i += 1
+                continue
+
+        cleaned_tokens.append(token)
+        i += 1
+
+    tokens = cleaned_tokens
+
     # Remove extra whitespace
-    s = ' '.join(s.split())
+    s = ' '.join(tokens)
 
     return s
 
@@ -522,9 +574,33 @@ def search_string_in_sanitized_title(search_string, title):
         debug(f"Matched search string: {search_string} with title: {sanitized_title}")
         debug(f"Matched search string: {sanitized_search_string} with title: {title}")
         return True
-    else:
-        debug(f"Skipping {sanitized_title} as it doesn't match search string: {sanitized_search_string}")
-        return False
+
+    # Fallback: allow a strict prefix match when the remaining tokens in the
+    # search phrase are descriptive (e.g. localized subtitles) rather than
+    # sequel numbering like "2" or "II". This helps when Zone-Téléchargement
+    # lists a localized title with extra wording but only the original title is
+    # present in release names.
+    search_tokens = sanitized_search_string.split()
+    title_tokens = sanitized_title.split()
+
+    if title_tokens and len(title_tokens) < len(search_tokens):
+        prefix = search_tokens[:len(title_tokens)]
+        if prefix == title_tokens:
+            extra_tokens = search_tokens[len(title_tokens):]
+
+            numeric_like = {
+                token for token in extra_tokens
+                if token.isdigit() or token in _ROMAN_NUMERAL_MAP
+            }
+
+            if not numeric_like:
+                debug(
+                    f"Allowing sanitized prefix match for {sanitized_title} within {sanitized_search_string}"
+                )
+                return True
+
+    debug(f"Skipping {sanitized_title} as it doesn't match search string: {sanitized_search_string}")
+    return False
 
 
 def is_imdb_id(search_string):

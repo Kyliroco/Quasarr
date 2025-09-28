@@ -7,6 +7,7 @@
 import html
 import re
 import time
+import unicodedata
 from base64 import urlsafe_b64encode
 from urllib.parse import quote_plus, urljoin, urlparse
 
@@ -101,6 +102,24 @@ def _update_hostname(shared_state, current_host, final_url):
     return current_host
 
 
+def _extract_year_from_highlight(soup):
+    """Return the release year advertised in the highlighted filename block."""
+    if not soup:
+        return ""
+
+    matches = []
+    year_pattern = re.compile(r"(?:19|20)\d{2}")
+    for highlight in soup.find_all("font", {"color": "red"}):
+        text = highlight.get_text(" ", strip=True)
+        if not text:
+            continue
+        matches.extend(match.group(0) for match in year_pattern.finditer(text))
+
+    if matches:
+        return matches[-1]
+    return ""
+
+
 def _extract_production_year(text):
     if not text:
         return ""
@@ -146,34 +165,117 @@ def _extract_size_mb(shared_state, text):
             continue
 
     return 0
-def _extract_title(soup):
+def _extract_detail_title(soup):
+    if not soup:
+        return None
+
+    title_tag = soup.find("h1")
+    if title_tag:
+        text = title_tag.get_text(strip=True)
+        if text:
+            return text
+
     font_red = soup.find("font", {"color": "red"})
-    titre = font_red.get_text(strip=True) if font_red else None
-    return titre
+    if font_red:
+        text = font_red.get_text(strip=True)
+        if text:
+            return text
+    return None
+
+
+def _extract_quality_language_tokens(soup):
+    if not soup:
+        return []
+
+    def candidate_quality_texts():
+        for tag in soup.find_all(["div", "span", "p", "strong"]):
+            text = tag.get_text(" ", strip=True)
+            if not text:
+                continue
+            lowered = text.lower()
+            if not (lowered.startswith("qualité") or lowered.startswith("qualite")):
+                continue
+            suffix = lowered[7:]  # characters following "qualité"
+            if suffix and suffix[0].isalpha():
+                # Skip plurals such as "qualités" or other words that continue with letters.
+                continue
+            if "egalement" in lowered or "également" in lowered:
+                continue
+            yield text
+
+    selected_text = ""
+    for candidate in candidate_quality_texts():
+        selected_text = candidate
+        if "|" in candidate or len(candidate) <= 64:
+            break
+
+    if not selected_text:
+        return []
+
+    match = re.search(r"qualit(?:é|e)\s*[:\-]?\s*(.+)", selected_text, re.IGNORECASE)
+    remainder = match.group(1).strip() if match else ""
+    if not remainder:
+        return []
+
+    parts = [part.strip(" -") for part in remainder.split("|")]
+    tokens = []
+    for part in parts:
+        cleaned = re.sub(r"[()\[\]]", "", part).strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"\s+", ".", cleaned)
+        if cleaned:
+            tokens.append(cleaned)
+
+    if len(tokens) <= 1:
+        language_text = None
+        lang_pattern = re.compile(r"langue", re.IGNORECASE)
+        lang_tag = soup.find(string=lang_pattern)
+        if lang_tag:
+            container = lang_tag.find_parent(["div", "span", "p", "strong"])
+            if not container:
+                container = lang_tag.parent
+            if container:
+                language_text = container.get_text(" ", strip=True)
+        if language_text:
+            match_lang = re.search(r"langue\s*[:\-]?\s*(.+)", language_text, re.IGNORECASE)
+            if match_lang:
+                lang_remainder = match_lang.group(1).strip()
+                if lang_remainder:
+                    cleaned_lang = re.sub(r"[()\[\]]", "", lang_remainder)
+                    cleaned_lang = re.sub(r"\s+", ".", cleaned_lang.strip())
+                    if cleaned_lang:
+                        tokens.append(cleaned_lang)
+
+    return tokens
 
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
     production_year = ""
     size_mb = 0
+    detail_title = None
+    quality_tokens = []
 
     if not source_url:
-        return updated_host, production_year, size_mb
+        return updated_host, production_year, size_mb, detail_title, quality_tokens
 
     try:
         response = requests.get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
-        return updated_host, production_year, size_mb
+        return updated_host, production_year, size_mb, detail_title, quality_tokens
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
 
     try:
         detail_soup = BeautifulSoup(response.text, "html.parser")
         text = detail_soup.get_text(" ", strip=True)
-        title = _extract_title(detail_soup)
-        production_year = _extract_production_year(text)
+        title = _extract_detail_title(detail_soup)
+        highlighted_year = _extract_year_from_highlight(detail_soup)
+        production_year = highlighted_year or _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
+        quality_tokens = _extract_quality_language_tokens(detail_soup)
         if production_year:
             debug(
                 f"{hostname.upper()} extracted production year '{production_year}' from {response.url}"
@@ -182,10 +284,21 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             debug(
                 f"{hostname.upper()} extracted size {size_mb} MB from {response.url}"
             )
+        if title:
+            detail_title = title
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb,title
+    return updated_host, production_year, size_mb, detail_title, quality_tokens
+
+
+def _strip_parenthetical_content(text):
+    if not text:
+        return text
+
+    # Remove any parenthetical segments and collapse leftover whitespace.
+    stripped = re.sub(r"\s*\([^)]*\)", "", text)
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 def _normalize_title(title):
@@ -196,6 +309,113 @@ def _normalize_title(title):
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
     return normalized
+
+
+def _normalize_quality_token(token):
+    if not token:
+        return token
+
+    if re.fullmatch(r"hdrip", token, re.IGNORECASE):
+        return "HDTV 720p"
+
+    if re.search(r"4k", token, re.IGNORECASE):
+        spaced = re.sub(r"[._-]+", " ", token)
+        spaced = re.sub(
+            r"4k([A-Za-z0-9]+)",
+            lambda match: f"2160p {match.group(1)}",
+            spaced,
+            flags=re.IGNORECASE,
+        )
+        spaced = re.sub(
+            r"([A-Za-z0-9]+)4k",
+            lambda match: f"{match.group(1)} 2160p",
+            spaced,
+            flags=re.IGNORECASE,
+        )
+        spaced = re.sub(r"\b4k\b", "2160p", spaced, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", spaced).strip()
+        if normalized:
+            return normalized
+    return token
+
+
+def _contains_year_token(text, year):
+    if not text or not year:
+        return False
+
+    pattern = rf"(?<!\d){re.escape(year)}(?!\d)"
+    return re.search(pattern, text) is not None
+
+
+def _tokenize_title(text):
+    if not text:
+        return []
+
+    tokens = re.split(r"[\s._\-]+", text)
+    cleaned = []
+    for token in tokens:
+        stripped = token.strip().strip("()[]{}")
+        if stripped:
+            cleaned.append(stripped)
+    return cleaned
+
+
+def _extract_year_from_tokens(tokens):
+    if not tokens:
+        return ""
+
+    for token in reversed(tokens):
+        if re.fullmatch(r"19\d{2}|20\d{2}", token):
+            return token
+    return ""
+
+
+def _append_component(components, seen, component):
+    if not component:
+        return
+
+    normalized = _normalize_title(component)
+    if not normalized:
+        return
+
+    key = normalized.lower()
+    if key in seen:
+        return
+
+    seen.add(key)
+    components.append(normalized)
+
+
+def _build_final_title(title_source,
+                       listing_title,
+                       release_year,
+                       detail_quality_tokens,
+                       quality_text):
+    components = []
+    seen_components = set()
+
+    primary_title = title_source or listing_title or ""
+    normalized_primary = _normalize_title(primary_title) if primary_title else ""
+
+    if normalized_primary:
+        _append_component(components, seen_components, primary_title)
+
+    if release_year and not _contains_year_token(normalized_primary, release_year):
+        _append_component(components, seen_components, release_year)
+
+    quality_components = list(detail_quality_tokens or [])
+    if not quality_components and quality_text:
+        quality_components = _tokenize_title(quality_text)
+
+    for token in quality_components:
+        normalized_quality = _normalize_quality_token(token)
+        _append_component(components, seen_components, normalized_quality)
+
+    if not components:
+        fallback_title = primary_title or listing_title or quality_text or hostname
+        _append_component(components, seen_components, fallback_title)
+
+    return ".".join(filter(None, components))
 
 
 def _parse_results(shared_state,
@@ -279,7 +499,9 @@ def _parse_results(shared_state,
 
             detail_year = ""
             detail_size_mb = 0
-            release_host = current_host
+            detail_title = None
+            detail_quality_tokens = []
+            listing_title = title
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -289,21 +511,36 @@ def _parse_results(shared_state,
                         headers,
                         current_host,
                     )
-                    info("metadata_cache "+str(metadata_cache))
-                updated_host, detail_year, detail_size_mb,title = metadata_cache[source]
+                (
+                    updated_host,
+                    detail_year,
+                    detail_size_mb,
+                    detail_title,
+                    detail_quality_tokens,
+                ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
-                    release_host = updated_host
+                if detail_title:
+                    title = detail_title
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
-            title_with_quality = title
-            if quality and title is None:
-                title_with_quality = f"{title} {detail_year} {quality}".strip()
-                final_title = _normalize_title(title_with_quality)
-            else:
-                final_title = _normalize_title(title)
+            listing_tokens = _tokenize_title(listing_title)
+            release_year = _extract_year_from_tokens(listing_tokens)
+            if not release_year and quality:
+                release_year = _extract_year_from_tokens(_tokenize_title(quality))
+            if not release_year:
+                release_year = detail_year
+
+            title_source = title or listing_title or ""
+            final_title = _build_final_title(
+                title_source,
+                listing_title,
+                release_year,
+                detail_quality_tokens,
+                quality,
+            )
             size_bytes = mb * 1024 * 1024 if mb else 0
 
             payload = urlsafe_b64encode(
@@ -329,6 +566,39 @@ def _parse_results(shared_state,
                 },
                 "type": "protected",
             })
+
+            stripped_title_source = _strip_parenthetical_content(title_source)
+            if stripped_title_source and stripped_title_source != title_source:
+                stripped_final_title = _build_final_title(
+                    stripped_title_source,
+                    listing_title,
+                    release_year,
+                    detail_quality_tokens,
+                    quality,
+                )
+
+                if stripped_final_title and stripped_final_title != final_title:
+                    stripped_payload = urlsafe_b64encode(
+                        f"{stripped_final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                    ).decode("utf-8")
+
+                    stripped_link = (
+                        f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
+                    )
+
+                    releases.append({
+                        "details": {
+                            "title": stripped_final_title,
+                            "hostname": hostname,
+                            "imdb_id": release_imdb_id,
+                            "link": stripped_link,
+                            "mirror": mirror,
+                            "size": size_bytes,
+                            "date": parse_date_fr(published),
+                            "source": source,
+                        },
+                        "type": "protected",
+                    })
         except Exception as exc:
             debug(f"Error parsing {hostname.upper()} card: {exc}")
             continue
@@ -379,7 +649,7 @@ def zt_feed(shared_state, start_time, request_from, mirror=None):
         url = f"https://{zt}/?p={category}"
         headers = {"User-Agent": shared_state.values["user_agent"]}
 
-        info(
+        debug(
             f"{hostname.upper()} feed request for category '{category}' "
             f"(mirror={mirror}) using host '{zt}'"
         )
@@ -432,42 +702,95 @@ def zt_search(shared_state,
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
         search_string = html.unescape(localized)
-        info(localized)
-    q = quote_plus(search_string)[:32]
-    releases_all = []
-    for category in categories:
-        for i in range(1,4):
-            url = f"https://{zt}/?p={category}&search={q}&page={i}"
-            headers = {"User-Agent": shared_state.values["user_agent"]}
+        debug(localized)
+    def _strip_diacritics(text):
+        if not text:
+            return text
+        normalized = unicodedata.normalize("NFD", text)
+        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
 
-            info(
-                f"{hostname.upper()} search request for '{search_string}' "
-                f"(category={category}, mirror={mirror}) using host '{zt}'"
-            )
+    seen_links = set()
+    aggregated_releases = []
 
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                zt = _update_hostname(shared_state, zt, response.url)
-                current_host = zt
-                soup = BeautifulSoup(response.text, "html.parser")
-                releases = _parse_results(shared_state,
-                                        soup,
-                                        response.url,
-                                        request_from,
-                                        mirror,
-                                        headers,
-                                        current_host= current_host,
-                                        search_string=search_string,
-                                        season=season,
-                                        episode=episode,
-                                        imdb_id=imdb_id)
-                releases_all.extend(releases)
-            except Exception as exc:
-                message = f"Error loading {hostname.upper()} search: {exc}"
-                info(message)
-                raise RuntimeError(message) from exc
+    def perform_query(raw_query):
+        nonlocal zt
 
-    
+        # The Zone-Téléchargement search form limits inputs to 32 characters.
+        # Apply the same limit *before* percent-encoding so multibyte characters
+        # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
+        limited_search = (raw_query or "")[:32]
+        q = quote_plus(limited_search)
+
+        for category in categories:
+            page = 1
+            found_any_release = False
+
+            while True and page<10:
+                url = f"https://{zt}/?p={category}&search={q}&page={page}"
+                headers = {"User-Agent": shared_state.values["user_agent"]}
+
+                debug(
+                    f"{hostname.upper()} search request for '{raw_query}' "
+                    f"(category={category}, page={page}, mirror={mirror}) using host '{zt}'"
+                )
+
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    zt = _update_hostname(shared_state, zt, response.url)
+                    current_host = zt
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    cards = soup.select("div.cover_global")
+                    debug(f"len cards : len(cards)")
+                    found = _parse_results(
+                        shared_state,
+                        soup,
+                        response.url,
+                        request_from,
+                        mirror,
+                        headers,
+                        current_host=current_host,
+                        search_string=raw_query,
+                        season=season,
+                        episode=episode,
+                        imdb_id=imdb_id,
+                    )
+                    debug(f"found : {found}")
+                    matched_on_page = 0
+                    for release in found:
+                        link = release.get("details", {}).get("link")
+                        debug(f"link :{link}")
+                        if link:
+                            if link in seen_links:
+                                continue
+                            seen_links.add(link)
+                        aggregated_releases.append(release)
+                        matched_on_page += 1
+
+                    if matched_on_page:
+                        found_any_release = True
+                        diff_page=3
+
+                    if not cards:
+                        break
+
+                    if matched_on_page == 0 and found_any_release:
+                        if diff_page == 0:
+                            break
+                        else:
+                            diff_page-= 1
+
+                    page += 1
+                except Exception as exc:
+                    message = f"Error loading {hostname.upper()} search: {exc}"
+                    info(message)
+                    raise RuntimeError(message) from exc
+
+    perform_query(search_string)
+
+    accentless = _strip_diacritics(search_string)
+    if accentless and accentless != search_string:
+        perform_query(accentless)
+
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
-    return releases_all
+    return aggregated_releases

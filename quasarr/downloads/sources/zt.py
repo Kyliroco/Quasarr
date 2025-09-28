@@ -91,7 +91,7 @@ def get_zt_download_links(shared_state, url, mirror, title):
     zt = config.get(hostname)
     headers = {"User-Agent": shared_state.values["user_agent"]}
 
-    info(
+    debug(
         f"{hostname.upper()} fetching download page for '{title}' "
         f"(mirror={mirror}) at {url}"
     )
@@ -216,15 +216,20 @@ def get_zt_download_links(shared_state, url, mirror, title):
     if not links:
         info(f"{hostname.upper()} site returned no recognizable download links for {title}.")
     else:
-        info(
+        debug(
             f"{hostname.upper()} extracted {len(links)} download links for '{title}' "
             f"(imdb_id={imdb_id or 'unknown'})"
         )
+        print(links)
+        for i, (_, host) in enumerate(links):
+            if host.lower() == "rapidgator":   # insensible à la casse
+                links.append(links.pop(i))
+                break   # arrêter après l’avoir déplacé
     for link in links:
         final_link = get_final_links(link[0])
         alive , rep = is_link_alive(final_link)
         if alive:
-            info("lien trouvé" ,final_link)
+            info(f"lien trouvé {str(final_link)} for host {final_link [1]} for title {title}" )
             break
         else:
             final_link=""
@@ -487,7 +492,7 @@ def get_final_links(url):
     # Cherche le lien <a rel="external nofollow"> dans la réponse finale
     href = find_external_nofollow_href(resp.text, resp.url)
     if href:
-        info("[+] Lien trouvé :", href)
+        debug("[+] Lien trouvé :"+ str(href))
     else:
         info("[!] Aucun lien <a rel='external nofollow'> trouvé dans la réponse.")
 

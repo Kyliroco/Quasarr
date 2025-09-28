@@ -124,7 +124,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
     else:
         stype = "feed search"
 
-    info(f'Starting {len(functions)} search functions for {stype}... This may take some time.')
+    debug(f'Starting {len(functions)} search functions for {stype}... This may take some time.')
 
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(func) for func in functions]

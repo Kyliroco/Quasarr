@@ -294,7 +294,7 @@ class PackageSnapshotter:
                          f"{'s' if len(packages_to_start) > 1 else ''} from linkgrabber")
         except (TokenExpiredException, RequestTimeoutException, MYJDException) as e:
             debug(f"[Snapshotter] autostart skipped: {e}")
-        info("Fin de snapshot")
+        debug("Fin de snapshot")
         return downloads
 
 
