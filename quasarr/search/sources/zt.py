@@ -256,16 +256,31 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     size_mb = 0
     detail_title = None
     quality_tokens = []
+    available_episodes = set()
 
     if not source_url:
-        return updated_host, production_year, size_mb, detail_title, quality_tokens
+        return (
+            updated_host,
+            production_year,
+            size_mb,
+            detail_title,
+            quality_tokens,
+            available_episodes,
+        )
 
     try:
         response = requests.get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
-        return updated_host, production_year, size_mb, detail_title, quality_tokens
+        return (
+            updated_host,
+            production_year,
+            size_mb,
+            detail_title,
+            quality_tokens,
+            available_episodes,
+        )
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
 
@@ -277,6 +292,27 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         production_year = highlighted_year or _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
         quality_tokens = _extract_quality_language_tokens(detail_soup)
+        episode_pattern = re.compile(
+            r"(?i)\b(?:ep(?:isode)?)\s*(\d{1,3})(?:\s*[-à]\s*(\d{1,3}))?"
+        )
+        for link in detail_soup.select("div.postinfo b a"):
+            link_text = link.get_text(" ", strip=True)
+            if not link_text:
+                continue
+            for start_str, end_str in episode_pattern.findall(link_text):
+                try:
+                    start_ep = int(start_str)
+                except ValueError:
+                    continue
+                if end_str:
+                    try:
+                        end_ep = int(end_str)
+                    except ValueError:
+                        end_ep = start_ep
+                    for ep_num in range(start_ep, end_ep + 1):
+                        available_episodes.add(ep_num)
+                else:
+                    available_episodes.add(start_ep)
         if production_year:
             debug(
                 f"{hostname.upper()} extracted production year '{production_year}' from {response.url}"
@@ -290,7 +326,14 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb, detail_title, quality_tokens
+    return (
+        updated_host,
+        production_year,
+        size_mb,
+        detail_title,
+        quality_tokens,
+        available_episodes,
+    )
 
 
 def _strip_parenthetical_content(text):
@@ -434,6 +477,7 @@ def _parse_results(shared_state,
     releases = []
     category_id = _get_newznab_category_id(request_from)
     request_lower = (request_from or "").lower()
+    request_is_sonarr = "sonarr" in request_lower
     cards = soup.select("div.cover_global")
 
     debug(
@@ -449,27 +493,42 @@ def _parse_results(shared_state,
             if not title_link:
                 debug(f"{hostname.upper()} skipping card without title link on {base_url}")
                 continue
-            title = title_link.get_text(strip=True)
-            if not title:
+            raw_title = title_link.get_text(strip=True)
+            if not raw_title:
                 debug(f"{hostname.upper()} skipping card with empty title on {base_url}")
                 continue
 
+            require_episode_verification = False
             if search_string is not None:
-                if not shared_state.is_valid_release(title,
+                if not shared_state.is_valid_release(raw_title,
                                                      request_from,
                                                      search_string,
                                                      season,
                                                      episode):
-                    debug(
-                        f"{hostname.upper()} filtered title '{title}' "
-                        f"for requester={request_from}, search='{search_string}'"
-                    )
-                    continue
+                    if (
+                        request_is_sonarr
+                        and season is not None
+                        and episode is not None
+                        and shared_state.is_valid_release(
+                            raw_title,
+                            request_from,
+                            search_string,
+                            season,
+                            None,
+                        )
+                    ):
+                        require_episode_verification = True
+                    else:
+                        debug(
+                            f"{hostname.upper()} filtered title '{raw_title}' "
+                            f"for requester={request_from}, search='{search_string}'"
+                        )
+                        continue
 
             if "lazylibrarian" in request_lower:
-                title = shared_state.normalize_magazine_title(title)
+                title = shared_state.normalize_magazine_title(raw_title)
             else:
-                title = shared_state.normalize_localized_season_episode_tags(title)
+                title = shared_state.normalize_localized_season_episode_tags(raw_title)
 
             quality = ""
             quality_tag = card.select_one("span.detail_release")
@@ -522,6 +581,7 @@ def _parse_results(shared_state,
                     detail_size_mb,
                     detail_title,
                     detail_quality_tokens,
+                    detail_available_episodes,
                 ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
@@ -529,6 +589,20 @@ def _parse_results(shared_state,
                     if "lazylibrarian" not in request_lower:
                         detail_title = shared_state.normalize_localized_season_episode_tags(detail_title)
                     title = detail_title
+                if require_episode_verification:
+                    try:
+                        requested_episode = int(episode)
+                    except (TypeError, ValueError):
+                        requested_episode = None
+                    if (
+                        requested_episode is None
+                        or requested_episode not in detail_available_episodes
+                    ):
+                        debug(
+                            f"{hostname.upper()} skipping '{title}' because episode "
+                            f"{episode} not found in detail page"
+                        )
+                        continue
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
