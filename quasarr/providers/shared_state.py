@@ -479,6 +479,30 @@ def sanitize_title(title: str) -> str:
     return title
 
 
+_ROMAN_NUMERAL_MAP = {
+    'i': '1',
+    'ii': '2',
+    'iii': '3',
+    'iv': '4',
+    'v': '5',
+    'vi': '6',
+    'vii': '7',
+    'viii': '8',
+    'ix': '9',
+    'x': '10',
+    'xi': '11',
+    'xii': '12',
+    'xiii': '13',
+    'xiv': '14',
+    'xv': '15',
+    'xvi': '16',
+    'xvii': '17',
+    'xviii': '18',
+    'xix': '19',
+    'xx': '20',
+}
+
+
 def sanitize_string(s):
     s = s.lower()
 
@@ -507,8 +531,12 @@ def sanitize_string(s):
     # Replace obsolete titles
     s = s.replace('navy cis', 'ncis')
 
+    # Normalise standalone Roman numerals to digits for robust matching
+    tokens = s.split()
+    tokens = [_ROMAN_NUMERAL_MAP.get(token, token) for token in tokens]
+
     # Remove extra whitespace
-    s = ' '.join(s.split())
+    s = ' '.join(tokens)
 
     return s
 
