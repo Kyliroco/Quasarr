@@ -571,9 +571,7 @@ def search_string_in_sanitized_title(search_string, title):
 
             if not numeric_like:
                 debug(
-                    "Allowing sanitized prefix match for %r within %r",
-                    sanitized_title,
-                    sanitized_search_string,
+                    f"Allowing sanitized prefix match for {sanitized_title} within {sanitized_search_string}"
                 )
                 return True
 
