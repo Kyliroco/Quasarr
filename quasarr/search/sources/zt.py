@@ -168,23 +168,33 @@ def _extract_quality_language_tokens(soup):
     if not soup:
         return []
 
-    def is_quality_tag(tag):
-        if tag.name not in {"div", "span", "p"}:
-            return False
-        text = tag.get_text(" ", strip=True)
-        lowered = text.lower()
-        return bool(text) and (lowered.startswith("qualité") or lowered.startswith("qualite"))
+    def candidate_quality_texts():
+        for tag in soup.find_all(["div", "span", "p", "strong"]):
+            text = tag.get_text(" ", strip=True)
+            if not text:
+                continue
+            lowered = text.lower()
+            if not (lowered.startswith("qualité") or lowered.startswith("qualite")):
+                continue
+            suffix = lowered[7:]  # characters following "qualité"
+            if suffix and suffix[0].isalpha():
+                # Skip plurals such as "qualités" or other words that continue with letters.
+                continue
+            if "egalement" in lowered or "également" in lowered:
+                continue
+            yield text
 
-    quality_tag = soup.find(is_quality_tag)
-    if not quality_tag:
+    selected_text = ""
+    for candidate in candidate_quality_texts():
+        selected_text = candidate
+        if "|" in candidate or len(candidate) <= 64:
+            break
+
+    if not selected_text:
         return []
 
-    text = quality_tag.get_text(" ", strip=True)
-    match = re.search(r"qualit(?:é|e)\s*[:\-]?\s*(.+)", text, re.IGNORECASE)
-    if not match:
-        return []
-
-    remainder = match.group(1).strip()
+    match = re.search(r"qualit(?:é|e)\s*[:\-]?\s*(.+)", selected_text, re.IGNORECASE)
+    remainder = match.group(1).strip() if match else ""
     if not remainder:
         return []
 
@@ -197,6 +207,27 @@ def _extract_quality_language_tokens(soup):
         cleaned = re.sub(r"\s+", ".", cleaned)
         if cleaned:
             tokens.append(cleaned)
+
+    if len(tokens) <= 1:
+        language_text = None
+        lang_pattern = re.compile(r"langue", re.IGNORECASE)
+        lang_tag = soup.find(string=lang_pattern)
+        if lang_tag:
+            container = lang_tag.find_parent(["div", "span", "p", "strong"])
+            if not container:
+                container = lang_tag.parent
+            if container:
+                language_text = container.get_text(" ", strip=True)
+        if language_text:
+            match_lang = re.search(r"langue\s*[:\-]?\s*(.+)", language_text, re.IGNORECASE)
+            if match_lang:
+                lang_remainder = match_lang.group(1).strip()
+                if lang_remainder:
+                    cleaned_lang = re.sub(r"[()\[\]]", "", lang_remainder)
+                    cleaned_lang = re.sub(r"\s+", ".", cleaned_lang.strip())
+                    if cleaned_lang:
+                        tokens.append(cleaned_lang)
+
     return tokens
 
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
