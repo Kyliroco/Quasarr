@@ -101,6 +101,23 @@ def _update_hostname(shared_state, current_host, final_url):
     return current_host
 
 
+def _extract_year_from_highlight(soup):
+    """Return the release year advertised in the highlighted filename block."""
+    if not soup:
+        return ""
+
+    matches = []
+    for highlight in soup.find_all("font", {"color": "red"}):
+        text = highlight.get_text(" ", strip=True)
+        if not text:
+            continue
+        matches.extend(re.findall(r"(19|20)\d{2}", text))
+
+    if matches:
+        return matches[-1]
+    return ""
+
+
 def _extract_production_year(text):
     if not text:
         return ""
@@ -253,7 +270,8 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         detail_soup = BeautifulSoup(response.text, "html.parser")
         text = detail_soup.get_text(" ", strip=True)
         title = _extract_detail_title(detail_soup)
-        production_year = _extract_production_year(text)
+        highlighted_year = _extract_year_from_highlight(detail_soup)
+        production_year = highlighted_year or _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
         quality_tokens = _extract_quality_language_tokens(detail_soup)
         if production_year:
@@ -280,6 +298,15 @@ def _normalize_title(title):
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
     return normalized
+
+
+def _normalize_quality_token(token):
+    if not token:
+        return token
+
+    if re.fullmatch(r"hdrip", token, re.IGNORECASE):
+        return "HDTV.720p"
+    return token
 
 
 def _contains_year_token(text, year):
@@ -460,7 +487,8 @@ def _parse_results(shared_state,
                 quality_components = _tokenize_title(quality)
 
             for token in quality_components:
-                _append_component(components, seen_components, token)
+                normalized_quality = _normalize_quality_token(token)
+                _append_component(components, seen_components, normalized_quality)
 
             if not components:
                 fallback_title = title or listing_title or quality or "zt"
