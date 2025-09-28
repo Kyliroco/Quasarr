@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 
 from quasarr.providers.imdb_metadata import get_localized_title
 from quasarr.providers.log import info, debug
+from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
 hostname = "zt"
 
@@ -305,7 +306,8 @@ def _normalize_title(title):
     if not title:
         return title
 
-    normalized = title.replace(" - ", "-")
+    normalized = normalize_localized_season_episode_tags(title)
+    normalized = normalized.replace(" - ", "-")
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
     return normalized
@@ -431,6 +433,7 @@ def _parse_results(shared_state,
                    imdb_id=None):
     releases = []
     category_id = _get_newznab_category_id(request_from)
+    request_lower = (request_from or "").lower()
     cards = soup.select("div.cover_global")
 
     debug(
@@ -463,8 +466,10 @@ def _parse_results(shared_state,
                     )
                     continue
 
-            if "lazylibrarian" in request_from.lower():
+            if "lazylibrarian" in request_lower:
                 title = shared_state.normalize_magazine_title(title)
+            else:
+                title = shared_state.normalize_localized_season_episode_tags(title)
 
             quality = ""
             quality_tag = card.select_one("span.detail_release")
@@ -521,6 +526,8 @@ def _parse_results(shared_state,
                 if updated_host:
                     current_host = updated_host
                 if detail_title:
+                    if "lazylibrarian" not in request_lower:
+                        detail_title = shared_state.normalize_localized_season_episode_tags(detail_title)
                     title = detail_title
 
             mb = detail_size_mb or 0
