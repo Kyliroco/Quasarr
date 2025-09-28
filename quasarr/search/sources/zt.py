@@ -722,13 +722,16 @@ def zt_search(shared_state,
         q = quote_plus(limited_search)
 
         for category in categories:
-            for i in range(1, 4):
-                url = f"https://{zt}/?p={category}&search={q}&page={i}"
+            page = 1
+            found_any_release = False
+
+            while True:
+                url = f"https://{zt}/?p={category}&search={q}&page={page}"
                 headers = {"User-Agent": shared_state.values["user_agent"]}
 
                 debug(
                     f"{hostname.upper()} search request for '{raw_query}' "
-                    f"(category={category}, mirror={mirror}) using host '{zt}'"
+                    f"(category={category}, page={page}, mirror={mirror}) using host '{zt}'"
                 )
 
                 try:
@@ -737,6 +740,7 @@ def zt_search(shared_state,
                     zt = _update_hostname(shared_state, zt, response.url)
                     current_host = zt
                     soup = BeautifulSoup(response.text, "html.parser")
+                    cards = soup.select("div.cover_global")
                     found = _parse_results(
                         shared_state,
                         soup,
@@ -750,6 +754,8 @@ def zt_search(shared_state,
                         episode=episode,
                         imdb_id=imdb_id,
                     )
+
+                    matched_on_page = 0
                     for release in found:
                         link = release.get("details", {}).get("link")
                         if link:
@@ -757,6 +763,18 @@ def zt_search(shared_state,
                                 continue
                             seen_links.add(link)
                         aggregated_releases.append(release)
+                        matched_on_page += 1
+
+                    if matched_on_page:
+                        found_any_release = True
+
+                    if not cards:
+                        break
+
+                    if matched_on_page == 0 and found_any_release:
+                        break
+
+                    page += 1
                 except Exception as exc:
                     message = f"Error loading {hostname.upper()} search: {exc}"
                     info(message)
