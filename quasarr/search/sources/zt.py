@@ -518,7 +518,7 @@ def zt_feed(shared_state, start_time, request_from, mirror=None):
         url = f"https://{zt}/?p={category}"
         headers = {"User-Agent": shared_state.values["user_agent"]}
 
-        info(
+        debug(
             f"{hostname.upper()} feed request for category '{category}' "
             f"(mirror={mirror}) using host '{zt}'"
         )
@@ -571,7 +571,7 @@ def zt_search(shared_state,
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
         search_string = html.unescape(localized)
-        info(localized)
+        debug(localized)
     q = quote_plus(search_string)[:32]
     releases_all = []
     for category in categories:
@@ -579,7 +579,7 @@ def zt_search(shared_state,
             url = f"https://{zt}/?p={category}&search={q}&page={i}"
             headers = {"User-Agent": shared_state.values["user_agent"]}
 
-            info(
+            debug(
                 f"{hostname.upper()} search request for '{search_string}' "
                 f"(category={category}, mirror={mirror}) using host '{zt}'"
             )
