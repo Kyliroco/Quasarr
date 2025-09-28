@@ -306,7 +306,26 @@ def _normalize_quality_token(token):
         return token
 
     if re.fullmatch(r"hdrip", token, re.IGNORECASE):
-        return "HDTV.720p"
+        return "HDTV 720p"
+
+    if re.search(r"4k", token, re.IGNORECASE):
+        spaced = re.sub(r"[._-]+", " ", token)
+        spaced = re.sub(
+            r"4k([A-Za-z0-9]+)",
+            lambda match: f"2160p {match.group(1)}",
+            spaced,
+            flags=re.IGNORECASE,
+        )
+        spaced = re.sub(
+            r"([A-Za-z0-9]+)4k",
+            lambda match: f"{match.group(1)} 2160p",
+            spaced,
+            flags=re.IGNORECASE,
+        )
+        spaced = re.sub(r"\b4k\b", "2160p", spaced, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", spaced).strip()
+        if normalized:
+            return normalized
     return token
 
 
