@@ -7,6 +7,7 @@ import os
 import re
 import time
 import traceback
+import unicodedata
 from datetime import datetime, timedelta, date
 from urllib import parse
 
@@ -505,6 +506,12 @@ _ROMAN_NUMERAL_MAP = {
 
 def sanitize_string(s):
     s = s.lower()
+
+    # Strip diacritics to ensure accented characters normalize to their ASCII
+    # equivalents before we start removing punctuation. This keeps titles like
+    # "L'Élève" and "L'Elève" aligned during matching.
+    s = unicodedata.normalize("NFD", s)
+    s = ''.join(ch for ch in s if unicodedata.category(ch) != 'Mn')
 
     # Remove dots / pluses
     s = s.replace('.', ' ')
