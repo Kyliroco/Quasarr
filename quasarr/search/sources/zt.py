@@ -644,7 +644,11 @@ def zt_search(shared_state,
             return releases
         search_string = html.unescape(localized)
         info(localized)
-    q = quote_plus(search_string)[:32]
+    # The Zone-Téléchargement search form limits inputs to 32 characters.
+    # Apply the same limit *before* percent-encoding so multibyte characters
+    # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
+    limited_search = search_string[:32]
+    q = quote_plus(limited_search)
     releases_all = []
     for category in categories:
         for i in range(1,4):
