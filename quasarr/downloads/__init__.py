@@ -19,7 +19,7 @@ from quasarr.downloads.sources.sf import get_sf_download_links, resolve_sf_redir
 from quasarr.downloads.sources.sl import get_sl_download_links
 from quasarr.downloads.sources.wd import get_wd_download_links
 from quasarr.downloads.sources.zt import get_zt_download_links
-from quasarr.providers.log import info
+from quasarr.providers.log import info , debug
 from quasarr.providers.notifications import send_discord_message
 from quasarr.providers.statistics import StatsHelper
 
@@ -30,7 +30,7 @@ def handle_unprotected(shared_state, title, password, package_id, imdb_id, url,
         links = func(shared_state, url, mirror, title)
 
     if links:
-        info(f"Decrypted {len(links)} download links for {title}")
+        debug(f"Decrypted {len(links)} download links for {title}")
         send_discord_message(shared_state, title=title, case="unprotected", imdb_id=imdb_id, source=url)
         added = shared_state.download_package(links, title, password, package_id)
         if not added:

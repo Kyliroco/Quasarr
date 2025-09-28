@@ -63,7 +63,7 @@ def setup_arr_routes(app):
             if len(decoded_payload) == 5:
                 imdb_id = decoded_payload[4]
                 return f'''<nzb>
-                    <file title="{title}"
+                    <file title="{title.replace("&","and")}"
                         url="{url}"
                         mirror="{mirror}" size_mb="{size_mb}" password="password" imdb_id="{imdb_id}" />
                 </nzb>'''
@@ -96,7 +96,7 @@ def setup_arr_routes(app):
             password = root.find(".//file").attrib.get("password")
             imdb_id = root.find(".//file").attrib.get("imdb_id")
 
-            info(f'Attempting download for "{title}"')
+            debug(f'Attempting download for "{title}"')
             request_from = request.headers.get('User-Agent')
             downloaded = download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id)
             try:
@@ -105,9 +105,9 @@ def setup_arr_routes(app):
                 title = downloaded["title"]
 
                 if success:
-                    info(f'"{title}" added successfully!')
+                    debug(f'"{title}" added successfully!')
                 else:
-                    info(f'"{title}" added unsuccessfully! See log for details.')
+                    info(f'"{title}" error! See log for details.')
                 nzo_ids.append(package_id)
             except KeyError:
                 info(f'Failed to download "{title}" - no package_id returned')
@@ -208,7 +208,7 @@ def setup_arr_routes(app):
                     mirror = None if mirror == "None" else mirror
 
                     nzo_ids = []
-                    info(f'Attempting download for "{title}"')
+                    debug(f'Attempting download for "{title}"')
                     request_from = "lazylibrarian"
 
                     downloaded = download(
@@ -229,9 +229,9 @@ def setup_arr_routes(app):
                         title = downloaded.get("title", title)
 
                         if success:
-                            info(f'"{title}" added successfully!')
+                            debug(f'"{title}" added successfully!')
                         else:
-                            info(f'"{title}" added unsuccessfully! See log for details.')
+                            info(f'"{title}" error ! See log for details.')
                         nzo_ids.append(package_id)
                     except KeyError:
                         info(f'Failed to download "{title}" - no package_id returned')
@@ -366,7 +366,7 @@ def setup_arr_routes(app):
                 request_from = request.headers.get('User-Agent')
 
                 if mode == 'caps':
-                    info(f"Providing indexer capability information to {request_from}")
+                    debug(f"Providing indexer capability information to {request_from}")
                     return '''<?xml version="1.0" encoding="UTF-8"?>
                                 <caps>
                                   <server 
@@ -438,7 +438,7 @@ def setup_arr_routes(app):
                                                               mirror=mirror
                                                               )
                             else:
-                                info(
+                                debug(
                                     f'Ignoring search request from {request_from} - only imdbid searches are supported')
                                 releases = [{}]  # sonarr expects this but we will not support non-imdbid searches
 

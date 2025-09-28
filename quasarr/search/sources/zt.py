@@ -725,7 +725,7 @@ def zt_search(shared_state,
             page = 1
             found_any_release = False
 
-            while True:
+            while True and page<10:
                 url = f"https://{zt}/?p={category}&search={q}&page={page}"
                 headers = {"User-Agent": shared_state.values["user_agent"]}
 
@@ -741,6 +741,7 @@ def zt_search(shared_state,
                     current_host = zt
                     soup = BeautifulSoup(response.text, "html.parser")
                     cards = soup.select("div.cover_global")
+                    debug(f"len cards : len(cards)")
                     found = _parse_results(
                         shared_state,
                         soup,
@@ -754,10 +755,11 @@ def zt_search(shared_state,
                         episode=episode,
                         imdb_id=imdb_id,
                     )
-
+                    debug(f"found : {found}")
                     matched_on_page = 0
                     for release in found:
                         link = release.get("details", {}).get("link")
+                        debug(f"link :{link}")
                         if link:
                             if link in seen_links:
                                 continue
@@ -767,12 +769,16 @@ def zt_search(shared_state,
 
                     if matched_on_page:
                         found_any_release = True
+                        diff_page=3
 
                     if not cards:
                         break
 
                     if matched_on_page == 0 and found_any_release:
-                        break
+                        if diff_page == 0:
+                            break
+                        else:
+                            diff_page-= 1
 
                     page += 1
                 except Exception as exc:
