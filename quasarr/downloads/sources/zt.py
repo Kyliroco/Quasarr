@@ -3,6 +3,7 @@
 # Project by https://github.com/rix1337
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 import requests
@@ -273,29 +274,48 @@ def get_zt_download_links(shared_state, url, mirror, title):
                 "url": absolute,
                 "display": display_name,
                 "host": base_hoster,
+                "episodes": frozenset(episode_numbers),
             })
 
     if not candidates:
         info(f"{hostname.upper()} site returned no recognizable download links for {title}.")
         return []
 
-    for index, entry in enumerate(candidates):
-        if entry["host"].lower() == "rapidgator":
-            candidates.append(candidates.pop(index))
+    hoster_groups = []
+    hoster_index = {}
+    for entry in candidates:
+        host_key = entry["host"].lower()
+        if host_key not in hoster_index:
+            hoster_index[host_key] = len(hoster_groups)
+            hoster_groups.append({"host": entry["host"], "entries": []})
+        hoster_groups[hoster_index[host_key]]["entries"].append(entry)
+
+    for index, group in enumerate(hoster_groups):
+        if group["host"].lower() == "rapidgator":
+            hoster_groups.append(hoster_groups.pop(index))
             break
 
+    requested_episodes = set()
+    for entry in candidates:
+        requested_episodes.update(entry["episodes"])
+
+    if target_episode is not None:
+        requested_episodes = {target_episode}
+
+    missing_episodes = set(requested_episodes)
     resolved_links = []
     resolved_seen = set()
-    for entry in candidates:
+
+    def _resolve_entry(entry):
         try:
             final_url = get_final_links(entry["url"])
         except Exception as exc:
             debug(f"{hostname.upper()} failed to resolve link {entry['url']}: {exc}")
-            continue
+            return None
 
         if not final_url:
             debug(f"{hostname.upper()} resolver returned no link for {entry['url']}")
-            continue
+            return None
 
         alive, info_data = is_link_alive(final_url)
         if not alive:
@@ -303,14 +323,73 @@ def get_zt_download_links(shared_state, url, mirror, title):
                 f"{hostname.upper()} skipping dead link {final_url}"
                 f" ({info_data.get('status_code')} - {info_data.get('note')})"
             )
+            return None
+
+        return final_url
+
+    for group in hoster_groups:
+        host_name = group["host"]
+        relevant_entries = []
+        for entry in group["entries"]:
+            episodes = set(entry["episodes"])
+            if missing_episodes:
+                if episodes:
+                    if missing_episodes.isdisjoint(episodes):
+                        debug(
+                            f"{hostname.upper()} skipping '{entry['url']}' from hoster '{host_name}' "
+                            f"because it only covers episodes {sorted(episodes)}"
+                        )
+                        continue
+                else:
+                    debug(
+                        f"{hostname.upper()} considering '{entry['url']}' from hoster '{host_name}' "
+                        "despite missing episode markers because requests remain"
+                    )
+
+            relevant_entries.append(entry)
+
+        if not relevant_entries:
             continue
 
-        if final_url in resolved_seen:
-            debug(f"{hostname.upper()} skipping duplicate resolved link {final_url}")
-            continue
+        debug(
+            f"{hostname.upper()} validating {len(relevant_entries)} episode links for hoster '{host_name}'"
+        )
 
-        resolved_seen.add(final_url)
-        resolved_links.append(final_url)
+        max_workers = max(1, min(8, len(relevant_entries)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_entry = {
+                executor.submit(_resolve_entry, entry): entry for entry in relevant_entries
+            }
+
+            for future in as_completed(future_to_entry):
+                entry = future_to_entry[future]
+                try:
+                    final_url = future.result()
+                except Exception as exc:  # pragma: no cover - safeguard
+                    debug(
+                        f"{hostname.upper()} unexpected error while resolving {entry['url']}: {exc}"
+                    )
+                    continue
+
+                if not final_url:
+                    continue
+
+                if final_url in resolved_seen:
+                    debug(f"{hostname.upper()} skipping duplicate resolved link {final_url}")
+                    continue
+
+                resolved_seen.add(final_url)
+                resolved_links.append(final_url)
+
+                if missing_episodes:
+                    resolved_eps = set(entry["episodes"])
+                    if resolved_eps:
+                        missing_episodes.difference_update(resolved_eps)
+                    elif target_episode is not None:
+                        missing_episodes.discard(target_episode)
+
+        if requested_episodes and not missing_episodes:
+            break
 
     if not resolved_links:
         info(f"{hostname.upper()} could not validate any download links for {title}.")
