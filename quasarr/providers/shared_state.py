@@ -542,6 +542,22 @@ def sanitize_string(s):
     tokens = s.split()
     tokens = [_ROMAN_NUMERAL_MAP.get(token, token) for token in tokens]
 
+    cleaned_tokens = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+
+        if token in {"vol", "volume"}:
+            next_token = tokens[i + 1] if i + 1 < len(tokens) else ""
+            if next_token.isdigit():
+                i += 1
+                continue
+
+        cleaned_tokens.append(token)
+        i += 1
+
+    tokens = cleaned_tokens
+
     # Remove extra whitespace
     s = ' '.join(tokens)
 
