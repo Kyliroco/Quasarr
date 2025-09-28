@@ -550,9 +550,35 @@ def search_string_in_sanitized_title(search_string, title):
         debug(f"Matched search string: {search_string} with title: {sanitized_title}")
         debug(f"Matched search string: {sanitized_search_string} with title: {title}")
         return True
-    else:
-        debug(f"Skipping {sanitized_title} as it doesn't match search string: {sanitized_search_string}")
-        return False
+
+    # Fallback: allow a strict prefix match when the remaining tokens in the
+    # search phrase are descriptive (e.g. localized subtitles) rather than
+    # sequel numbering like "2" or "II". This helps when Zone-Téléchargement
+    # lists a localized title with extra wording but only the original title is
+    # present in release names.
+    search_tokens = sanitized_search_string.split()
+    title_tokens = sanitized_title.split()
+
+    if title_tokens and len(title_tokens) < len(search_tokens):
+        prefix = search_tokens[:len(title_tokens)]
+        if prefix == title_tokens:
+            extra_tokens = search_tokens[len(title_tokens):]
+
+            numeric_like = {
+                token for token in extra_tokens
+                if token.isdigit() or token in _ROMAN_NUMERAL_MAP
+            }
+
+            if not numeric_like:
+                debug(
+                    "Allowing sanitized prefix match for %r within %r",
+                    sanitized_title,
+                    sanitized_search_string,
+                )
+                return True
+
+    debug(f"Skipping {sanitized_title} as it doesn't match search string: {sanitized_search_string}")
+    return False
 
 
 def is_imdb_id(search_string):
