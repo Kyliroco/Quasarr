@@ -8,7 +8,7 @@ import xml.sax.saxutils as sax_utils
 from base64 import urlsafe_b64decode
 from datetime import datetime
 from functools import wraps
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlunparse
 from xml.etree import ElementTree
 
 from bottle import abort, request
@@ -40,12 +40,21 @@ from urllib.parse import urlparse, parse_qs
 def normalize_url(url: str) -> str:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
+    fragment = parsed.fragment
 
     if "p" in query and "id" in query:
         category = query["p"][0]   # ex: film, serie, anime
         item_id = query["id"][0]   # ex: 34098-alvin...
-        return f"{parsed.scheme}://{parsed.netloc}/{category}/{item_id}"
-    
+        normalized = parsed._replace(
+            path=f"/{category}/{item_id}",
+            query="",
+            fragment=fragment,
+        )
+        return urlunparse(normalized)
+
+    if fragment:
+        return urlunparse(parsed._replace(fragment=fragment))
+
     return url
 
 def setup_arr_routes(app):
