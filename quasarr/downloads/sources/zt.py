@@ -250,12 +250,17 @@ def get_zt_download_links(shared_state, url, mirror, title):
             episode_numbers = _episode_numbers_from_text(anchor_text)
 
             if target_episode is not None:
-                if episode_numbers and target_episode not in episode_numbers:
+                if not episode_numbers:
+                    debug(
+                        f"{hostname.upper()} skipping unlabeled link {absolute} while targeting episode {target_episode}"
+                    )
+                    continue
+                if target_episode not in episode_numbers:
                     debug(
                         f"{hostname.upper()} skipping '{absolute}' because it covers episodes {sorted(episode_numbers)}"
                     )
                     continue
-                if episode_numbers and len(episode_numbers) > 1:
+                if len(episode_numbers) > 1:
                     debug(
                         f"{hostname.upper()} skipping pack link {absolute} covering episodes {sorted(episode_numbers)}"
                     )
