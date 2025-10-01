@@ -12,7 +12,42 @@ from bs4 import BeautifulSoup
 from quasarr.providers.log import info, debug
 
 hostname = "zt"
-UNSUPPORTED_MIRRORS =["nitroflare"]
+UNSUPPORTED_MIRRORS = ["nitroflare"]
+
+
+def _normalize_hoster_from_url(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+    host = host.split("@")[-1]
+    host = host.split(":")[0]
+    host = host.lstrip("www.")
+
+    simplified = (
+        host.replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+    if simplified.startswith("rapidgator"):
+        return "rapidgator"
+    if simplified.startswith("1fichier"):
+        return "1fichier"
+    if simplified in {"ddownload", "ddlto", "ddown", "ddownlaod"}:
+        return "ddownload"
+    if "nitro" in simplified:
+        return "nitroflare"
+    if "turbobit" in simplified:
+        return "turbobit"
+    if "uploady" in simplified:
+        return "uploady"
+    if "dailyuploads" in simplified or "dailyupload" in simplified:
+        return "dailyuploads"
+
+    return host
 
 IGNORED_HOSTS = {
     "imdb.com",
@@ -136,6 +171,13 @@ def get_zt_download_links(shared_state, url, mirror, title):
         f"(mirror={mirror}, episode={target_episode}) at {base_url}"
     )
 
+    normalized_mirror = _normalize_hoster_from_url(str(mirror or ""))
+    if normalized_mirror in UNSUPPORTED_MIRRORS:
+        info(
+            f"{hostname.upper()} skipping unsupported host '{normalized_mirror}' for {title}"
+        )
+        return []
+
     try:
         final_url = get_final_links(base_url)
     except Exception as exc:
@@ -147,6 +189,13 @@ def get_zt_download_links(shared_state, url, mirror, title):
     if not final_url:
         info(
             f"{hostname.upper()} resolver returned no direct link for '{title}' from {base_url}."
+        )
+        return []
+
+    normalized_host = _normalize_hoster_from_url(final_url)
+    if normalized_host in UNSUPPORTED_MIRRORS:
+        info(
+            f"{hostname.upper()} skipping unsupported host '{normalized_host}' for {title}"
         )
         return []
 

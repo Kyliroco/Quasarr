@@ -144,20 +144,32 @@ def _collect_download_entries(detail_soup, base_url):
     entries = []
     seen_urls = set()
     current_host = None
+    skip_current_host = False
 
     for block in detail_soup.select("div.postinfo"):
         for bold in block.find_all("b"):
             host_div = bold.find("div")
             if host_div:
                 host_name = _normalize_hoster_name(host_div.get_text(strip=True))
-                if not host_name or host_name in UNSUPPORTED_HOSTERS:
+                if not host_name:
                     current_host = None
-                else:
-                    current_host = host_name
+                    skip_current_host = False
+                    continue
+
+                if host_name in UNSUPPORTED_HOSTERS or host_name not in SUPPORTED_MIRRORS:
+                    current_host = None
+                    skip_current_host = True
+                    continue
+
+                current_host = host_name
+                skip_current_host = False
                 continue
 
             anchor = bold.find("a", href=True)
             if not anchor:
+                continue
+
+            if skip_current_host:
                 continue
 
             href = urljoin(base_url, anchor["href"])
@@ -175,9 +187,15 @@ def _collect_download_entries(detail_soup, base_url):
             host_for_entry = current_host
             if not host_for_entry:
                 netloc = parsed.netloc.lower()
-                host_for_entry = _normalize_hoster_name(netloc.split(".")[-2] if "." in netloc else netloc)
+                host_for_entry = _normalize_hoster_name(
+                    netloc.split(".")[-2] if "." in netloc else netloc
+                )
 
-            if not host_for_entry or host_for_entry in UNSUPPORTED_HOSTERS:
+            if (
+                not host_for_entry
+                or host_for_entry in UNSUPPORTED_HOSTERS
+                or host_for_entry not in SUPPORTED_MIRRORS
+            ):
                 continue
 
             display = anchor.get_text(" ", strip=True)
@@ -918,8 +936,16 @@ def _parse_results(shared_state,
             size_bytes = mb * 1024 * 1024 if mb else 0
             release_date = parse_date_fr(published)
 
+            non_rapidgator_entries = [
+                entry for entry in detail_download_entries if entry.get("host") != "rapidgator"
+            ]
+            rapidgator_entries = [
+                entry for entry in detail_download_entries if entry.get("host") == "rapidgator"
+            ]
+            ordered_entries = non_rapidgator_entries + rapidgator_entries
+
             added_entry = False
-            for entry in detail_download_entries:
+            for entry in ordered_entries:
                 entry_url = entry.get("url")
                 if not entry_url:
                     continue
