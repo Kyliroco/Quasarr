@@ -79,7 +79,7 @@ def setup_arr_routes(app):
             elif (len(decoded_payload) == 6):
                 password = decoded_payload[4]
                 imdb_id = decoded_payload[5]
-                return f'<nzb><file title="{title}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="{password}" imdb_id="{imdb_id}"/></nzb>'
+                return f'<nzb><file title="{title.replace("&","and")}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="{password}" imdb_id="{imdb_id}"/></nzb>'
             else:
                 raise Exception("Le playload ne contient pas le bon nombre de paramètrès")
 
