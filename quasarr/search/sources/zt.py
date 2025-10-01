@@ -494,6 +494,73 @@ def _normalize_quality_token(token):
     return token
 
 
+_RESOLUTION_TOKEN_PATTERN = re.compile(r"(?i)(?:\b[1-9]\d{2,3}p\b|\b4k\b|\buhd\b)")
+
+
+def _normalize_series_quality_hint(text):
+    if not text:
+        return ""
+
+    cleaned = re.sub(r"[\[\]()]", " ", str(text))
+    cleaned = re.sub(r"[._-]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return cleaned
+
+
+def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens):
+    if not is_series_request:
+        return quality_text, list(detail_tokens or [])
+
+    tokens = list(detail_tokens or [])
+    hints = tokens[:]
+    if quality_text:
+        hints.append(quality_text)
+
+    if not hints:
+        return quality_text, tokens
+
+    for hint in hints:
+        if _RESOLUTION_TOKEN_PATTERN.search(str(hint or "")):
+            return quality_text, tokens
+
+    normalized_hints = []
+    for hint in hints:
+        normalized_hint = _normalize_series_quality_hint(hint)
+        if normalized_hint:
+            normalized_hints.append(normalized_hint)
+    normalized_set = set(normalized_hints)
+
+    resolution = None
+    if (
+        {"vf hd", "vfhd"} & normalized_set
+        or ("vf" in normalized_set and "hd" in normalized_set)
+    ):
+        resolution = "720p"
+    elif (
+        {"vostfr hd", "vostfrhd"} & normalized_set
+        or ("vostfr" in normalized_set and "hd" in normalized_set)
+    ):
+        resolution = "720p"
+    elif "vf" in normalized_set:
+        resolution = "480p"
+    elif "vostfr" in normalized_set:
+        resolution = "480p"
+
+    if not resolution:
+        return quality_text, tokens
+
+    if not any(_RESOLUTION_TOKEN_PATTERN.search(str(token or "")) for token in tokens):
+        tokens.append(resolution)
+
+    if quality_text:
+        if not _RESOLUTION_TOKEN_PATTERN.search(quality_text):
+            quality_text = f"{quality_text} {resolution}".strip()
+    else:
+        quality_text = resolution
+
+    return quality_text, tokens
+
+
 def _contains_year_token(text, year):
     if not text or not year:
         return False
@@ -813,6 +880,12 @@ def _parse_results(shared_state,
                 release_year = _extract_year_from_tokens(_tokenize_title(quality))
             if not release_year:
                 release_year = detail_year
+
+            quality, detail_quality_tokens = _coerce_series_quality_tokens(
+                request_is_sonarr,
+                quality,
+                detail_quality_tokens,
+            )
 
             title_source = title or listing_title or ""
             final_title_base = _build_final_title(
