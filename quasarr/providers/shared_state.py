@@ -24,6 +24,43 @@ lock = None
 SEASON_EP_REGEX = re.compile(r"(?i)(?:S\d{1,3}(?:E\d{1,3}(?:-\d{1,3})?)?|S\d{1,3}-\d{1,3})")
 # regex to filter out season/episode tags for movies
 MOVIE_REGEX = re.compile(r"^(?!.*(?:S\d{1,3}(?:E\d{1,3}(?:-\d{1,3})?)?|S\d{1,3}-\d{1,3})).*$", re.IGNORECASE)
+
+# Match localized "Saison" markers optionally followed by "Episode" or "Épisode"
+# so that we can normalize them to the standard Sxx/Eyy pattern used by Sonarr.
+_LOCALIZED_SEASON_EPISODE_PATTERN = re.compile(
+    r"\bSaison\s*(?P<season>\d{1,3})"
+    r"(?:\s*[-–—:]?\s*(?:É?pisode|Ep\.?|Eps?\.?|Episodes?)\s*(?P<episode>\d{1,3}))?",
+    re.IGNORECASE,
+)
+
+
+def normalize_localized_season_episode_tags(title: str) -> str:
+    """Convert localized (French) season/episode markers to standard Sxx/Eyy tags."""
+
+    if not title:
+        return title
+
+    def _replacement(match: re.Match) -> str:
+        season_str = match.group("season")
+        episode_str = match.group("episode")
+
+        try:
+            season_num = int(season_str)
+        except (TypeError, ValueError):
+            return match.group(0)
+
+        normalized = f"S{season_num:02d}"
+
+        if episode_str:
+            try:
+                episode_num = int(episode_str)
+            except ValueError:
+                return normalized
+            normalized += f"E{episode_num:02d}"
+
+        return normalized
+
+    return _LOCALIZED_SEASON_EPISODE_PATTERN.sub(_replacement, title)
 # List of known file hosters that should not be used as search/feed sites
 SHARE_HOSTERS = {
     "rapidgator",
@@ -611,6 +648,8 @@ def is_imdb_id(search_string):
 
 
 def match_in_title(title: str, season: int = None, episode: int = None) -> bool:
+    title = normalize_localized_season_episode_tags(title)
+
     # ensure season/episode are ints (or None)
     if isinstance(season, str):
         try:
@@ -624,9 +663,9 @@ def match_in_title(title: str, season: int = None, episode: int = None) -> bool:
             episode = None
 
     pattern = re.compile(
-        r"(?i)(?:\.|^)[sS](\d+)(?:-(\d+))?"  # season or season‑range
-        r"(?:[eE](\d+)(?:-(?:[eE]?)(\d+))?)?"  # episode or episode‑range
-        r"(?=[\.-]|$)"
+        r"(?i)(?<![A-Za-z0-9])s(\d+)(?:-(\d+))?"  # season or season‑range
+        r"(?:[\s.\-_]*e(\d+)(?:-(?:[eE]?)(\d+))?)?"  # episode or episode‑range
+        r"(?=[^A-Za-z0-9]|$)"
     )
 
     matches = pattern.findall(title)
@@ -672,6 +711,8 @@ def is_valid_release(title: str,
     - season: desired season number (or None)
     - episode: desired episode number (or None)
     """
+    title = normalize_localized_season_episode_tags(title)
+
     try:
         # Determine whether this is a movie or TV search
         rf = request_from.lower()

@@ -179,10 +179,29 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
         (flags['ZT'], lambda *a: handle_unprotected(*a, func=get_zt_download_links, label='ZT')),
     ]
 
+    lowered_url = url.lower()
+
     for flag, fn in handlers:
-        if flag and flag.lower() in url.lower():
+        if flag and flag.lower() in lowered_url:
             return {"package_id": package_id,
                     **fn(shared_state, title, password, package_id, imdb_id, url, mirror, size_mb)}
+
+    if "dl-protect" in lowered_url or "dlprotect" in lowered_url:
+        return {
+            "package_id": package_id,
+            **handle_unprotected(
+                shared_state,
+                title,
+                password,
+                package_id,
+                imdb_id,
+                url,
+                mirror,
+                size_mb,
+                func=get_zt_download_links,
+                label='ZT',
+            ),
+        }
 
     if "filecrypt" in url.lower():
         return {"package_id": package_id, **handle_protected(

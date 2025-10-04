@@ -3,7 +3,8 @@
 # Project by https://github.com/rix1337
 
 import re
-from urllib.parse import parse_qs, urljoin, urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -11,7 +12,42 @@ from bs4 import BeautifulSoup
 from quasarr.providers.log import info, debug
 
 hostname = "zt"
-UNSUPPORTED_MIRRORS =["nitroflare"]
+UNSUPPORTED_MIRRORS = ["nitroflare"]
+
+
+def _normalize_hoster_from_url(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+
+    host = host.split("@")[-1]
+    host = host.split(":")[0]
+    host = host.lstrip("www.")
+
+    simplified = (
+        host.replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(".", "")
+    )
+
+    if simplified.startswith("rapidgator"):
+        return "rapidgator"
+    if simplified.startswith("1fichier"):
+        return "1fichier"
+    if simplified in {"ddownload", "ddlto", "ddown", "ddownlaod"}:
+        return "ddownload"
+    if "nitro" in simplified:
+        return "nitroflare"
+    if "turbobit" in simplified:
+        return "turbobit"
+    if "uploady" in simplified:
+        return "uploady"
+    if "dailyuploads" in simplified or "dailyupload" in simplified:
+        return "dailyuploads"
+
+    return host
 
 IGNORED_HOSTS = {
     "imdb.com",
@@ -73,173 +109,105 @@ def _iter_candidate_links(soup):
 
     if not seen:
         yield soup
-from urllib.parse import urlparse
 
 def denormalize_url(url: str) -> str:
     parsed = urlparse(url)
     path_parts = parsed.path.strip("/").split("/")
-    
+
     if len(path_parts) >= 2:
         category = path_parts[0]   # ex: film, serie, anime
         item_id = path_parts[1]    # ex: 34098-alvin...
         return f"{parsed.scheme}://{parsed.netloc}/?p={category}&id={item_id}"
-    
+
     return url
 
+
+def _split_episode_fragment(url: str):
+    parsed = urlparse(url)
+    episode = None
+    if parsed.fragment:
+        for fragment in parsed.fragment.split("&"):
+            if not fragment:
+                continue
+            key, _, value = fragment.partition("=")
+            if key == "episode" and value.isdigit():
+                episode = int(value)
+                break
+    cleaned = parsed._replace(fragment="")
+    return urlunparse(cleaned), episode
+
+
+_EPISODE_RANGE_PATTERN = re.compile(
+    r"(?i)(?:é?pisode|ep)\s*(\d{1,3})(?:\s*[-à]\s*(\d{1,3}))?"
+)
+
+
+def _episode_numbers_from_text(text: str):
+    numbers = set()
+    if not text:
+        return numbers
+
+    for match in _EPISODE_RANGE_PATTERN.finditer(text):
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else start
+        for value in range(start, end + 1):
+            numbers.add(value)
+
+    if not numbers:
+        for raw in re.findall(r"\d{1,3}", text):
+            try:
+                numbers.add(int(raw))
+            except ValueError:
+                continue
+
+    return numbers
+
+
 def get_zt_download_links(shared_state, url, mirror, title):
-    config = shared_state.values["config"]("Hostnames")
-    zt = config.get(hostname)
-    headers = {"User-Agent": shared_state.values["user_agent"]}
+    base_url, target_episode = _split_episode_fragment(url)
 
     debug(
-        f"{hostname.upper()} fetching download page for '{title}' "
-        f"(mirror={mirror}) at {url}"
+        f"{hostname.upper()} resolving dl-protect link for '{title}' "
+        f"(mirror={mirror}, episode={target_episode}) at {base_url}"
     )
 
+    normalized_mirror = _normalize_hoster_from_url(str(mirror or ""))
+    if normalized_mirror in UNSUPPORTED_MIRRORS:
+        info(
+            f"{hostname.upper()} skipping unsupported host '{normalized_mirror}' for {title}"
+        )
+        return []
+
     try:
-        response = requests.get(denormalize_url(url), headers=headers, timeout=10)
-        response.raise_for_status()
+        final_url = get_final_links(base_url)
     except Exception as exc:
-        message = (
-            f"{hostname.upper()} site has been updated. Grabbing download links for {title} "
-            f"not possible: {exc}"
+        info(
+            f"{hostname.upper()} failed to transform dl-protect link for {title}: {exc}"
         )
-        info(message)
-        raise RuntimeError(message) from exc
+        return []
 
-    zt = _update_hostname(shared_state, zt, response.url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    if not final_url:
+        info(
+            f"{hostname.upper()} resolver returned no direct link for '{title}' from {base_url}."
+        )
+        return []
 
-    imdb_id = _extract_imdb_id(soup)
+    normalized_host = _normalize_hoster_from_url(final_url)
+    if normalized_host in UNSUPPORTED_MIRRORS:
+        info(
+            f"{hostname.upper()} skipping unsupported host '{normalized_host}' for {title}"
+        )
+        return []
 
-    links = []
-    visited = set()
-
-    for container in _iter_candidate_links(soup):
-        header = container.find_previous("h2")
-        if header and "streaming" in header.get_text(strip=True).lower():
-            debug(
-                f"{hostname.upper()} skipping streaming container for '{title}' on {response.url}"
-            )
-            continue
-
-        for a_tag in container.find_all("a", href=True):
-            href = a_tag.get("href", "").strip()
-            if not href or href.startswith("javascript:"):
-                debug(
-                    f"{hostname.upper()} ignoring non-link anchor '{href}' for '{title}'"
-                )
-                continue
-
-            absolute = urljoin(response.url, href)
-            parsed = urlparse(absolute)
-            scheme = parsed.scheme.lower()
-            if scheme not in {"http", "https"}:
-                debug(
-                    f"{hostname.upper()} ignoring unsupported scheme '{scheme}' "
-                    f"for link {absolute}"
-                )
-                continue
-
-            netloc = parsed.netloc.lower()
-            if not netloc:
-                debug(f"{hostname.upper()} ignoring link without netloc: {absolute}")
-                continue
-
-            if netloc.endswith(zt):
-                debug(
-                    f"{hostname.upper()} skipping internal redirect link {absolute} for '{title}'"
-                )
-                continue
-
-            if netloc in IGNORED_HOSTS:
-                debug(f"{hostname.upper()} ignoring known non-hoster domain {netloc}")
-                continue
-
-            link_text = a_tag.get_text(" ", strip=True).lower()
-            if "regarder" in link_text:
-                debug(
-                    f"{hostname.upper()} skipping streaming text link {absolute} for '{title}'"
-                )
-                continue
-
-            query = parse_qs(parsed.query)
-            rl_values = [v.lower() for values in query.values() for v in values]
-            if any(value in {"a1", "h1"} for value in rl_values):
-                debug(f"{hostname.upper()} skipping streaming query link {absolute}")
-                continue
-
-            hoster_name = None
-            prev_div = a_tag.find_previous("div")
-            while prev_div:
-                if prev_div.find_parent("div", class_="postinfo") == container:
-                    hoster_name = prev_div.get_text(strip=True)
-                    break
-                prev_div = prev_div.find_previous("div")
-
-            if not hoster_name:
-                hoster_parts = netloc.split(".")
-                if len(hoster_parts) >= 2:
-                    hoster_name = hoster_parts[-2]
-                else:
-                    hoster_name = netloc
-
-            base_hoster:str = hoster_name
-            if base_hoster.lower() not in UNSUPPORTED_MIRRORS:
-                if base_hoster.lower() in {zt.lower(), "dl-protect"}:
-                    debug(f"{hostname.upper()} ignoring protected redirect hoster {base_hoster}")
-                    continue
-
-                if mirror and mirror.lower() not in base_hoster.lower():
-                    debug(
-                        f"{hostname.upper()} skipping hoster '{base_hoster}' because it "
-                        f"does not match requested mirror '{mirror}'"
-                    )
-                    continue
-
-                if absolute in visited:
-                    debug(f"{hostname.upper()} already collected link {absolute}")
-                    continue
-
-                visited.add(absolute)
-                anchor_text = a_tag.get_text(" ", strip=True)
-                if anchor_text:
-                    anchor_text = " ".join(anchor_text.split())
-                display_name = base_hoster
-                if anchor_text and re.search(r"\bepisode\b", anchor_text.lower()):
-                    display_name = f"{base_hoster} - {anchor_text}"
-
-                debug(
-                    f"{hostname.upper()} accepted download link {absolute} with label '{display_name}'"
-                )
-                links.append([absolute, display_name])
-    if not links:
-        info(f"{hostname.upper()} site returned no recognizable download links for {title}.")
-    else:
+    alive, info_data = is_link_alive(final_url)
+    if not alive:
         debug(
-            f"{hostname.upper()} extracted {len(links)} download links for '{title}' "
-            f"(imdb_id={imdb_id or 'unknown'})"
+            f"{hostname.upper()} skipping dead link {final_url}"
+            f" ({info_data.get('status_code')} - {info_data.get('note')})"
         )
-        print(links)
-        for i, (_, host) in enumerate(links):
-            if host.lower() == "rapidgator":   # insensible à la casse
-                links.append(links.pop(i))
-                break   # arrêter après l’avoir déplacé
-    for link in links:
-        final_link = get_final_links(link[0])
-        alive , rep = is_link_alive(final_link)
-        if alive:
-            info(f"lien trouvé {str(final_link)} for host {final_link [1]} for title {title}" )
-            break
-        else:
-            final_link=""
-    if final_link=="":
-        print("No links")
-        return{}
-    return {
-        "links": [final_link],
-        "imdb_id": imdb_id,
-    }
+        return []
+
+    return [final_url]
 
 DEFAULT_TIMEOUT = 15
 

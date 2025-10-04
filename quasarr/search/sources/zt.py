@@ -9,15 +9,88 @@ import re
 import time
 import unicodedata
 from base64 import urlsafe_b64encode
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from quasarr.providers.imdb_metadata import get_localized_title
 from quasarr.providers.log import info, debug
+from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
 hostname = "zt"
+
+SUPPORTED_MIRRORS = {
+    "rapidgator",
+    "1fichier",
+    "turbobit",
+    "uploady",
+    "dailyuploads",
+}
+UNSUPPORTED_HOSTERS = {"nitroflare"}
+STREAM_QUERY_TOKENS = {"a1", "b1", "h1"}
+
+
+def _normalize_hoster_name(host: str) -> str:
+    host = (host or "").strip().lower()
+    cleaned = (
+        host.replace(" ", "")
+            .replace("-", "")
+            .replace("_", "")
+            .replace(".", "")
+    )
+    if cleaned.startswith("rapidgator"):
+        return "rapidgator"
+    if cleaned in {"ddownload", "ddl", "ddlto", "ddownlaod", "ddown"}:
+        return "ddownload"
+    if cleaned.startswith("1fichier"):
+        return "1fichier"
+    if "nitro" in cleaned:
+        return "nitroflare"
+    if "turbobit" in cleaned:
+        return "turbobit"
+    if "uploady" in cleaned:
+        return "uploady"
+    if "dailyuploads" in cleaned or "dailyupload" in cleaned:
+        return "dailyuploads"
+    return host
+
+
+def _episode_numbers_from_text(text: str):
+    numbers = set()
+    if not text:
+        return numbers
+
+    pattern = re.compile(r"(?i)(?:é?pisode|ep)\s*(\d{1,3})(?:\s*[-à]\s*(\d{1,3}))?")
+    for match in pattern.finditer(text):
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else start
+        for value in range(start, end + 1):
+            numbers.add(value)
+
+    if not numbers:
+        for raw in re.findall(r"\d{1,3}", text):
+            try:
+                numbers.add(int(raw))
+            except ValueError:
+                continue
+
+    return numbers
+
+
+def _append_host_to_title(title: str, host: str) -> str:
+    if not title:
+        return title
+
+    host_component = re.sub(r"[^A-Za-z0-9]+", "", host or "")
+    if not host_component:
+        return title
+
+    if re.search(rf"(?i){re.escape(host_component)}", title):
+        return title
+
+    return f"{title}.{host_component.capitalize()}"
+
 
 def _extract_supported_mirrors(detail_soup):
     """
@@ -29,31 +102,6 @@ def _extract_supported_mirrors(detail_soup):
     """
     supported = set()
 
-    def normalize_host(h: str) -> str:
-        h = (h or "").strip().lower()
-        # uniformiser quelques variantes/domains
-        h_norm = (
-            h.replace(" ", "")
-             .replace("-", "")
-             .replace("_", "")
-             .replace(".", "")
-        )
-        if h_norm.startswith("rapidgator"):
-            return "rapidgator"
-        if h_norm in {"ddownload", "ddl", "ddlto", "ddownlaod", "ddown"}:
-            return "ddownload"
-        if h_norm.startswith("1fichier"):
-            return "1fichier"
-        if "nitro" in h_norm:
-            return "nitroflare"
-        if "turbobit" in h_norm:
-            return "turbobit"
-        if "uploady" in h_norm:
-            return "uploady"
-        if "dailyuploads" in h_norm or "dailyupload" in h_norm:
-            return "dailyuploads"
-        return h.lower()
-
     for post in detail_soup.select("div.postinfo"):
         # On cherche les <b> qui contiennent un <div> (le nom d'hébergeur)
         for host_b in post.select("b"):
@@ -61,7 +109,9 @@ def _extract_supported_mirrors(detail_soup):
             if not host_div:
                 continue
 
-            host = normalize_host(host_div.get_text(strip=True))
+            host = _normalize_hoster_name(host_div.get_text(strip=True))
+            if host in UNSUPPORTED_HOSTERS:
+                continue
 
             # Avancer jusqu'au prochain sibling <b> porteur du <a href=...>
             sib = host_b.next_sibling
@@ -87,6 +137,79 @@ def _extract_supported_mirrors(detail_soup):
                 supported.add(host)
 
     return list(supported)
+
+
+def _collect_download_entries(detail_soup, base_url):
+    entries = []
+    seen_urls = set()
+    current_host = None
+    skip_current_host = False
+
+    for block in detail_soup.select("div.postinfo"):
+        for bold in block.find_all("b"):
+            host_div = bold.find("div")
+            if host_div:
+                host_name = _normalize_hoster_name(host_div.get_text(strip=True))
+                if not host_name:
+                    current_host = None
+                    skip_current_host = False
+                    continue
+
+                if host_name in UNSUPPORTED_HOSTERS or host_name not in SUPPORTED_MIRRORS:
+                    current_host = None
+                    skip_current_host = True
+                    continue
+
+                current_host = host_name
+                skip_current_host = False
+                continue
+
+            anchor = bold.find("a", href=True)
+            if not anchor:
+                continue
+
+            if skip_current_host:
+                continue
+
+            href = urljoin(base_url, anchor["href"])
+            if href in seen_urls:
+                continue
+
+            parsed = urlparse(href)
+            if parsed.scheme.lower() not in {"http", "https"}:
+                continue
+
+            rl_tokens = {value.lower() for values in parse_qs(parsed.query).values() for value in values}
+            if rl_tokens & STREAM_QUERY_TOKENS:
+                continue
+
+            host_for_entry = current_host
+            if not host_for_entry:
+                netloc = parsed.netloc.lower()
+                host_for_entry = _normalize_hoster_name(
+                    netloc.split(".")[-2] if "." in netloc else netloc
+                )
+
+            if (
+                not host_for_entry
+                or host_for_entry in UNSUPPORTED_HOSTERS
+                or host_for_entry not in SUPPORTED_MIRRORS
+            ):
+                continue
+
+            display = anchor.get_text(" ", strip=True)
+            episodes = frozenset(_episode_numbers_from_text(display))
+
+            entries.append({
+                "url": href,
+                "host": host_for_entry,
+                "display": display,
+                "episodes": episodes,
+            })
+            seen_urls.add(href)
+
+    return entries
+
 
 def _update_hostname(shared_state, current_host, final_url):
     try:
@@ -255,16 +378,34 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     size_mb = 0
     detail_title = None
     quality_tokens = []
+    available_episodes = set()
+    download_entries = []
 
     if not source_url:
-        return updated_host, production_year, size_mb, detail_title, quality_tokens
+        return (
+            updated_host,
+            production_year,
+            size_mb,
+            detail_title,
+            quality_tokens,
+            available_episodes,
+            download_entries,
+        )
 
     try:
         response = requests.get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
-        return updated_host, production_year, size_mb, detail_title, quality_tokens
+        return (
+            updated_host,
+            production_year,
+            size_mb,
+            detail_title,
+            quality_tokens,
+            available_episodes,
+            download_entries,
+        )
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
 
@@ -276,6 +417,28 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         production_year = highlighted_year or _extract_production_year(text)
         size_mb = _extract_size_mb(shared_state, text) or 0
         quality_tokens = _extract_quality_language_tokens(detail_soup)
+        download_entries = _collect_download_entries(detail_soup, response.url)
+        episode_pattern = re.compile(
+            r"(?i)\b(?:ep(?:isode)?)\s*(\d{1,3})(?:\s*[-à]\s*(\d{1,3}))?"
+        )
+        for link in detail_soup.select("div.postinfo b a"):
+            link_text = link.get_text(" ", strip=True)
+            if not link_text:
+                continue
+            for start_str, end_str in episode_pattern.findall(link_text):
+                try:
+                    start_ep = int(start_str)
+                except ValueError:
+                    continue
+                if end_str:
+                    try:
+                        end_ep = int(end_str)
+                    except ValueError:
+                        end_ep = start_ep
+                    for ep_num in range(start_ep, end_ep + 1):
+                        available_episodes.add(ep_num)
+                else:
+                    available_episodes.add(start_ep)
         if production_year:
             debug(
                 f"{hostname.upper()} extracted production year '{production_year}' from {response.url}"
@@ -289,7 +452,15 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
-    return updated_host, production_year, size_mb, detail_title, quality_tokens
+    return (
+        updated_host,
+        production_year,
+        size_mb,
+        detail_title,
+        quality_tokens,
+        available_episodes,
+        download_entries,
+    )
 
 
 def _strip_parenthetical_content(text):
@@ -305,7 +476,8 @@ def _normalize_title(title):
     if not title:
         return title
 
-    normalized = title.replace(" - ", "-")
+    normalized = normalize_localized_season_episode_tags(title)
+    normalized = normalized.replace(" - ", "-")
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
     return normalized
@@ -337,6 +509,73 @@ def _normalize_quality_token(token):
         if normalized:
             return normalized
     return token
+
+
+_RESOLUTION_TOKEN_PATTERN = re.compile(r"(?i)(?:\b[1-9]\d{2,3}p\b|\b4k\b|\buhd\b)")
+
+
+def _normalize_series_quality_hint(text):
+    if not text:
+        return ""
+
+    cleaned = re.sub(r"[\[\]()]", " ", str(text))
+    cleaned = re.sub(r"[._-]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return cleaned
+
+
+def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens):
+    if not is_series_request:
+        return quality_text, list(detail_tokens or [])
+
+    tokens = list(detail_tokens or [])
+    hints = tokens[:]
+    if quality_text:
+        hints.append(quality_text)
+
+    if not hints:
+        return quality_text, tokens
+
+    for hint in hints:
+        if _RESOLUTION_TOKEN_PATTERN.search(str(hint or "")):
+            return quality_text, tokens
+
+    normalized_hints = []
+    for hint in hints:
+        normalized_hint = _normalize_series_quality_hint(hint)
+        if normalized_hint:
+            normalized_hints.append(normalized_hint)
+    normalized_set = set(normalized_hints)
+
+    resolution = None
+    if (
+        {"vf hd", "vfhd"} & normalized_set
+        or ("vf" in normalized_set and "hd" in normalized_set)
+    ):
+        resolution = "720p"
+    elif (
+        {"vostfr hd", "vostfrhd"} & normalized_set
+        or ("vostfr" in normalized_set and "hd" in normalized_set)
+    ):
+        resolution = "720p"
+    elif "vf" in normalized_set:
+        resolution = "480p"
+    elif "vostfr" in normalized_set:
+        resolution = "480p"
+
+    if not resolution:
+        return quality_text, tokens
+
+    if not any(_RESOLUTION_TOKEN_PATTERN.search(str(token or "")) for token in tokens):
+        tokens.append(resolution)
+
+    if quality_text:
+        if not _RESOLUTION_TOKEN_PATTERN.search(quality_text):
+            quality_text = f"{quality_text} {resolution}".strip()
+    else:
+        quality_text = resolution
+
+    return quality_text, tokens
 
 
 def _contains_year_token(text, year):
@@ -418,6 +657,56 @@ def _build_final_title(title_source,
     return ".".join(filter(None, components))
 
 
+_EPISODE_TAG_REGEX = re.compile(r"(?i)S\d{1,3}E\d{1,3}")
+
+
+def _ensure_episode_tag(title, season, episode):
+    if not title:
+        return title
+
+    try:
+        season_num = int(season) if season is not None else None
+        episode_num = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        return title
+
+    if season_num is None or episode_num is None:
+        return title
+
+    if _EPISODE_TAG_REGEX.search(title):
+        return title
+
+    season_tag = f"S{season_num:02d}"
+    episode_tag = f"E{episode_num:02d}"
+
+    def _inject_episode(match):
+        return f"{match.group(0)}{episode_tag}"
+
+    season_pattern = re.compile(rf"(?i){re.escape(season_tag)}")
+    if season_pattern.search(title):
+        return season_pattern.sub(_inject_episode, title, count=1)
+
+    return f"{title}.{season_tag}{episode_tag}"
+
+
+def _attach_episode_fragment(url, episode):
+    try:
+        episode_num = int(episode)
+    except (TypeError, ValueError):
+        return url
+
+    parsed = urlparse(url)
+    fragments = []
+    if parsed.fragment:
+        fragments = [
+            frag for frag in parsed.fragment.split("&")
+            if frag and not frag.startswith("episode=")
+        ]
+    fragments.append(f"episode={episode_num}")
+    updated_fragment = "&".join(fragments)
+    return urlunparse(parsed._replace(fragment=updated_fragment))
+
+
 def _parse_results(shared_state,
                    soup,
                    base_url,
@@ -431,6 +720,8 @@ def _parse_results(shared_state,
                    imdb_id=None):
     releases = []
     category_id = _get_newznab_category_id(request_from)
+    request_lower = (request_from or "").lower()
+    request_is_sonarr = "sonarr" in request_lower
     cards = soup.select("div.cover_global")
 
     debug(
@@ -440,31 +731,58 @@ def _parse_results(shared_state,
 
     metadata_cache = {}
 
+    try:
+        requested_season_num = int(season) if season is not None else None
+    except (TypeError, ValueError):
+        requested_season_num = None
+
+    try:
+        requested_episode_num = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        requested_episode_num = None
+
     for card in cards:
         try:
             title_link = card.select_one("div.cover_infos_title a")
             if not title_link:
                 debug(f"{hostname.upper()} skipping card without title link on {base_url}")
                 continue
-            title = title_link.get_text(strip=True)
-            if not title:
+            raw_title = title_link.get_text(strip=True)
+            if not raw_title:
                 debug(f"{hostname.upper()} skipping card with empty title on {base_url}")
                 continue
 
+            require_episode_verification = False
             if search_string is not None:
-                if not shared_state.is_valid_release(title,
+                if not shared_state.is_valid_release(raw_title,
                                                      request_from,
                                                      search_string,
                                                      season,
                                                      episode):
-                    debug(
-                        f"{hostname.upper()} filtered title '{title}' "
-                        f"for requester={request_from}, search='{search_string}'"
-                    )
-                    continue
+                    if (
+                        request_is_sonarr
+                        and season is not None
+                        and episode is not None
+                        and shared_state.is_valid_release(
+                            raw_title,
+                            request_from,
+                            search_string,
+                            season,
+                            None,
+                        )
+                    ):
+                        require_episode_verification = True
+                    else:
+                        debug(
+                            f"{hostname.upper()} filtered title '{raw_title}' "
+                            f"for requester={request_from}, search='{search_string}'"
+                        )
+                        continue
 
-            if "lazylibrarian" in request_from.lower():
-                title = shared_state.normalize_magazine_title(title)
+            if "lazylibrarian" in request_lower:
+                title = shared_state.normalize_magazine_title(raw_title)
+            else:
+                title = shared_state.normalize_localized_season_episode_tags(raw_title)
 
             quality = ""
             quality_tag = card.select_one("span.detail_release")
@@ -502,6 +820,8 @@ def _parse_results(shared_state,
             detail_title = None
             detail_quality_tokens = []
             listing_title = title
+            detail_available_episodes = set()
+            detail_download_entries = []
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -517,11 +837,56 @@ def _parse_results(shared_state,
                     detail_size_mb,
                     detail_title,
                     detail_quality_tokens,
+                    detail_available_episodes,
+                    detail_download_entries,
                 ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
                 if detail_title:
+                    if "lazylibrarian" not in request_lower:
+                        detail_title = shared_state.normalize_localized_season_episode_tags(detail_title)
                     title = detail_title
+
+            available_episode_numbers = set(detail_available_episodes)
+            for entry in detail_download_entries:
+                available_episode_numbers.update(entry.get("episodes", ()))
+
+            target_episode = None
+            if require_episode_verification:
+                try:
+                    requested_episode = int(episode)
+                except (TypeError, ValueError):
+                    requested_episode = None
+                if (
+                    requested_episode is None
+                    or (
+                        available_episode_numbers
+                        and requested_episode not in available_episode_numbers
+                    )
+                ):
+                    debug(
+                        f"{hostname.upper()} skipping '{title}' because episode "
+                        f"{episode} not found in detail page"
+                    )
+                    continue
+                target_episode = requested_episode
+            elif request_is_sonarr and requested_episode_num is not None:
+                target_episode = requested_episode_num
+                if (
+                    available_episode_numbers
+                    and target_episode not in available_episode_numbers
+                ):
+                    debug(
+                        f"{hostname.upper()} skipping '{title}' because episode "
+                        f"{episode} not provided by card"
+                    )
+                    continue
+
+            if not detail_download_entries:
+                debug(
+                    f"{hostname.upper()} detail page provided no download entries for '{title}'"
+                )
+                continue
 
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
@@ -533,72 +898,144 @@ def _parse_results(shared_state,
             if not release_year:
                 release_year = detail_year
 
+            quality, detail_quality_tokens = _coerce_series_quality_tokens(
+                request_is_sonarr,
+                quality,
+                detail_quality_tokens,
+            )
+
             title_source = title or listing_title or ""
-            final_title = _build_final_title(
+            final_title_base = _build_final_title(
                 title_source,
                 listing_title,
                 release_year,
                 detail_quality_tokens,
                 quality,
             )
-            size_bytes = mb * 1024 * 1024 if mb else 0
-
-            payload = urlsafe_b64encode(
-                f"{final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
-            ).decode("utf-8")
-
-            link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
-
-            debug(
-                f"{hostname.upper()} prepared release '{final_title}' with source {source}"
-            )
-
-            releases.append({
-                "details": {
-                    "title": final_title,
-                    "hostname": hostname,
-                    "imdb_id": release_imdb_id,
-                    "link": link,
-                    "mirror": mirror,
-                    "size": size_bytes,
-                    "date": parse_date_fr(published),
-                    "source": source,
-                },
-                "type": "protected",
-            })
+            if request_is_sonarr and requested_episode_num is not None:
+                final_title_base = _ensure_episode_tag(
+                    final_title_base, requested_season_num, requested_episode_num
+                )
 
             stripped_title_source = _strip_parenthetical_content(title_source)
+            stripped_final_title_base = None
             if stripped_title_source and stripped_title_source != title_source:
-                stripped_final_title = _build_final_title(
+                stripped_final_title_base = _build_final_title(
                     stripped_title_source,
                     listing_title,
                     release_year,
                     detail_quality_tokens,
                     quality,
                 )
-
-                if stripped_final_title and stripped_final_title != final_title:
-                    stripped_payload = urlsafe_b64encode(
-                        f"{stripped_final_title}|{source}|{mirror}|{mb}|{release_imdb_id}".encode("utf-8")
-                    ).decode("utf-8")
-
-                    stripped_link = (
-                        f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
+                if request_is_sonarr and requested_episode_num is not None:
+                    stripped_final_title_base = _ensure_episode_tag(
+                        stripped_final_title_base, requested_season_num, requested_episode_num
                     )
 
-                    releases.append({
-                        "details": {
-                            "title": stripped_final_title,
-                            "hostname": hostname,
-                            "imdb_id": release_imdb_id,
-                            "link": stripped_link,
-                            "mirror": mirror,
-                            "size": size_bytes,
-                            "date": parse_date_fr(published),
-                            "source": source,
-                        },
-                        "type": "protected",
-                    })
+            size_bytes = mb * 1024 * 1024 if mb else 0
+            release_date = parse_date_fr(published)
+
+            non_rapidgator_entries = [
+                entry for entry in detail_download_entries if entry.get("host") != "rapidgator"
+            ]
+            rapidgator_entries = [
+                entry for entry in detail_download_entries if entry.get("host") == "rapidgator"
+            ]
+            ordered_entries = non_rapidgator_entries + rapidgator_entries
+
+            added_entry = False
+            for entry in ordered_entries:
+                entry_url = entry.get("url")
+                if not entry_url:
+                    continue
+                entry_host = entry.get("host", "")
+                if mirror and mirror.lower() not in entry_host.lower():
+                    continue
+
+                entry_episodes = set(entry.get("episodes", ()))
+                if target_episode is not None:
+                    if not entry_episodes:
+                        debug(
+                            f"{hostname.upper()} skipping unlabeled link {entry_url} "
+                            f"while targeting episode {target_episode}"
+                        )
+                        continue
+                    if target_episode not in entry_episodes:
+                        debug(
+                            f"{hostname.upper()} skipping '{entry_url}' because it covers episodes "
+                            f"{sorted(entry_episodes)}"
+                        )
+                        continue
+                    if len(entry_episodes) > 1:
+                        debug(
+                            f"{hostname.upper()} skipping pack link {entry_url} covering episodes "
+                            f"{sorted(entry_episodes)}"
+                        )
+                        continue
+
+                entry_payload_source = _attach_episode_fragment(entry_url, target_episode)
+                entry_mirror = entry_host or mirror
+                if entry_mirror is None:
+                    entry_mirror = "None"
+
+                entry_final_title = _append_host_to_title(final_title_base, entry_host)
+
+                payload = urlsafe_b64encode(
+                    f"{entry_final_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                ).decode("utf-8")
+
+                link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
+
+                debug(
+                    f"{hostname.upper()} prepared release '{entry_final_title}' with source {entry_payload_source}"
+                )
+
+                releases.append({
+                    "details": {
+                        "title": entry_final_title,
+                        "hostname": hostname,
+                        "imdb_id": release_imdb_id,
+                        "link": link,
+                        "mirror": entry_mirror,
+                        "size": size_bytes,
+                        "date": release_date,
+                        "source": entry_payload_source,
+                    },
+                    "type": "protected",
+                })
+                added_entry = True
+
+                if stripped_final_title_base and stripped_final_title_base != final_title_base:
+                    stripped_entry_title = _append_host_to_title(
+                        stripped_final_title_base, entry_host
+                    )
+                    if stripped_entry_title and stripped_entry_title != entry_final_title:
+                        stripped_payload = urlsafe_b64encode(
+                            f"{stripped_entry_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                        ).decode("utf-8")
+
+                        stripped_link = (
+                            f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
+                        )
+
+                        releases.append({
+                            "details": {
+                                "title": stripped_entry_title,
+                                "hostname": hostname,
+                                "imdb_id": release_imdb_id,
+                                "link": stripped_link,
+                                "mirror": entry_mirror,
+                                "size": size_bytes,
+                                "date": release_date,
+                                "source": entry_payload_source,
+                            },
+                            "type": "protected",
+                        })
+
+            if not added_entry:
+                debug(
+                    f"{hostname.upper()} no eligible download entries remained for '{title}'"
+                )
         except Exception as exc:
             debug(f"Error parsing {hostname.upper()} card: {exc}")
             continue
@@ -697,11 +1134,19 @@ def zt_search(shared_state,
 
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
-        localized = get_localized_title(shared_state, imdb_id, 'fr')
+        if season:
+            localized = get_localized_title(shared_state, imdb_id, 'fr')
+            original = None
+        else:
+            localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
         search_string = html.unescape(localized)
+        if original:
+            search_original= html.unescape(original)
+        else:
+            search_original = None
         debug(localized)
     def _strip_diacritics(text):
         if not text:
@@ -787,10 +1232,13 @@ def zt_search(shared_state,
                     raise RuntimeError(message) from exc
 
     perform_query(search_string)
-
     accentless = _strip_diacritics(search_string)
     if accentless and accentless != search_string:
         perform_query(accentless)
-
+    if search_original and search_original != search_string:
+        perform_query(search_original)
+        search_original_accentless = _strip_diacritics(search_original)
+        if search_original_accentless and search_original_accentless != search_original:
+            perform_query(search_original_accentless)
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
     return aggregated_releases

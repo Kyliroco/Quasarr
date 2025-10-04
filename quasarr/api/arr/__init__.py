@@ -8,7 +8,7 @@ import xml.sax.saxutils as sax_utils
 from base64 import urlsafe_b64decode
 from datetime import datetime
 from functools import wraps
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlunparse
 from xml.etree import ElementTree
 
 from bottle import abort, request
@@ -40,42 +40,70 @@ from urllib.parse import urlparse, parse_qs
 def normalize_url(url: str) -> str:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
+    fragment = parsed.fragment
 
     if "p" in query and "id" in query:
         category = query["p"][0]   # ex: film, serie, anime
         item_id = query["id"][0]   # ex: 34098-alvin...
-        return f"{parsed.scheme}://{parsed.netloc}/{category}/{item_id}"
-    
+        normalized = parsed._replace(
+            path=f"/{category}/{item_id}",
+            query="",
+            fragment=fragment,
+        )
+        return urlunparse(normalized)
+
+    if fragment:
+        return urlunparse(parsed._replace(fragment=fragment))
+
     return url
 
 def setup_arr_routes(app):
     @app.get('/download/')
     def fake_nzb_file():
         payload = request.query.payload
-        decoded_payload = urlsafe_b64decode(payload).decode("utf-8").split("|")
-        if len(decoded_payload) >= 5 :
-            title = decoded_payload[0]
-            url = decoded_payload[1]
-            if "zone-telechargement" in url:
-                url =normalize_url(url=url)
-            mirror = decoded_payload[2]
-            size_mb = decoded_payload[3]
-            if len(decoded_payload) == 5:
-                imdb_id = decoded_payload[4]
-                return f'''<nzb>
-                    <file title="{title.replace("&","and")}"
-                        url="{url}"
-                        mirror="{mirror}" size_mb="{size_mb}" password="password" imdb_id="{imdb_id}" />
-                </nzb>'''
-            elif (len(decoded_payload) == 6):
-                password = decoded_payload[4]
-                imdb_id = decoded_payload[5]
-                return f'<nzb><file title="{title}" url="{url}" mirror="{mirror}" size_mb="{size_mb}" password="{password}" imdb_id="{imdb_id}"/></nzb>'
-            else:
-                raise Exception("Le playload ne contient pas le bon nombre de paramètrès")
+        try:
+            decoded_payload = urlsafe_b64decode(payload).decode("utf-8").split("|")
+        except Exception as exc:
+            abort(400, f"Invalid payload: {exc}")
 
+        if len(decoded_payload) < 5:
+            abort(400, "Le payload ne contient pas le bon nombre de paramètres")
+
+        title = decoded_payload[0]
+        url = decoded_payload[1]
+        if "zone-telechargement" in url:
+            url = normalize_url(url=url)
+        mirror = decoded_payload[2]
+        size_mb = decoded_payload[3]
+
+        password = None
+        imdb_id_index = 4
+        if len(decoded_payload) == 6:
+            password = decoded_payload[4]
+            imdb_id_index = 5
+        elif len(decoded_payload) > 6:
+            abort(400, "Le payload ne contient pas le bon nombre de paramètres")
         else:
-                raise Exception("Le playload ne contient pas le bon nombre de paramètrès")
+            password = "password"
+
+        imdb_id = decoded_payload[imdb_id_index]
+
+        def _escape_attr(value: str) -> str:
+            if value is None:
+                return ""
+            return sax_utils.escape(str(value), {'"': '&quot;'})
+
+        attributes = {
+            "title": _escape_attr(title),
+            "url": _escape_attr(url),
+            "mirror": _escape_attr(mirror),
+            "size_mb": _escape_attr(size_mb),
+            "password": _escape_attr(password),
+            "imdb_id": _escape_attr(imdb_id),
+        }
+
+        attr_string = " ".join(f"{key}=\"{value}\"" for key, value in attributes.items() if value)
+        return f"<?xml version=\"1.0\" encoding=\"utf-8\"?><nzb><file {attr_string} /></nzb>"
 
     @app.post('/api')
     @require_api_key

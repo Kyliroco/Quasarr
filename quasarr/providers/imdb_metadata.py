@@ -35,9 +35,8 @@ def get_poster_link(shared_state, imdb_id):
     return poster_link
 
 
-def get_localized_title(shared_state, imdb_id, language='de'):
+def get_localized_title(shared_state, imdb_id, language='de',original_title=False):
     localized_title = None
-
     headers = {
         'Accept-Language': language,
         'User-Agent': shared_state.values["user_agent"]
@@ -48,7 +47,10 @@ def get_localized_title(shared_state, imdb_id, language='de'):
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return localized_title
-
+    if original_title:
+        match = re.search(r"Titre original\s*:?(.+?)</div>", response.text, re.DOTALL)
+        if match:
+            titre_original = match.group(1).strip()
     try:
         match = re.findall(r'<title>(.*?) \(.*?</title>', response.text)
         localized_title = match[0]
@@ -70,7 +72,10 @@ def get_localized_title(shared_state, imdb_id, language='de'):
     # info(localized_title)
     # localized_title = re.sub(r'\s{2,}', ' ', localized_title)
     # info(localized_title)
-    return localized_title
+    if original_title:
+        return localized_title ,titre_original
+    else:
+        return localized_title
 
 
 def get_clean_title(title):
