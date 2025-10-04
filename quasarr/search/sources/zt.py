@@ -973,7 +973,16 @@ def _parse_results(shared_state,
                         )
                         continue
 
-                entry_payload_source = _attach_episode_fragment(entry_url, target_episode)
+                entry_episode_for_payload = target_episode
+                if (
+                    entry_episode_for_payload is None
+                    and len(entry_episodes) == 1
+                ):
+                    entry_episode_for_payload = next(iter(entry_episodes))
+
+                entry_payload_source = _attach_episode_fragment(
+                    entry_url, entry_episode_for_payload
+                )
                 entry_mirror = entry_host or mirror
                 if entry_mirror is None:
                     entry_mirror = "None"
