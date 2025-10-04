@@ -23,7 +23,6 @@ hostname = "zt"
 SUPPORTED_MIRRORS = {
     "rapidgator",
     "1fichier",
-    "ddownload",
     "turbobit",
     "uploady",
     "dailyuploads",
@@ -1135,11 +1134,19 @@ def zt_search(shared_state,
 
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
-        localized = get_localized_title(shared_state, imdb_id, 'fr')
+        if season:
+            localized = get_localized_title(shared_state, imdb_id, 'fr')
+            original = None
+        else:
+            localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
         search_string = html.unescape(localized)
+        if original:
+            search_original= html.unescape(original)
+        else:
+            search_original = None
         debug(localized)
     def _strip_diacritics(text):
         if not text:
@@ -1225,10 +1232,13 @@ def zt_search(shared_state,
                     raise RuntimeError(message) from exc
 
     perform_query(search_string)
-
     accentless = _strip_diacritics(search_string)
     if accentless and accentless != search_string:
         perform_query(accentless)
-
+    if search_original and search_original != search_string:
+        perform_query(search_original)
+        search_original_accentless = _strip_diacritics(search_original)
+        if search_original_accentless and search_original_accentless != search_original:
+            perform_query(search_original_accentless)
     debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
     return aggregated_releases
