@@ -980,6 +980,25 @@ def _parse_results(shared_state,
                 ):
                     entry_episode_for_payload = next(iter(entry_episodes))
 
+                entry_final_title_base = final_title_base
+                entry_stripped_title_base = stripped_final_title_base
+                if (
+                    request_is_sonarr
+                    and requested_season_num is not None
+                    and entry_episode_for_payload is not None
+                ):
+                    entry_final_title_base = _ensure_episode_tag(
+                        entry_final_title_base,
+                        requested_season_num,
+                        entry_episode_for_payload,
+                    )
+                    if entry_stripped_title_base:
+                        entry_stripped_title_base = _ensure_episode_tag(
+                            entry_stripped_title_base,
+                            requested_season_num,
+                            entry_episode_for_payload,
+                        )
+
                 entry_payload_source = _attach_episode_fragment(
                     entry_url, entry_episode_for_payload
                 )
@@ -987,7 +1006,9 @@ def _parse_results(shared_state,
                 if entry_mirror is None:
                     entry_mirror = "None"
 
-                entry_final_title = _append_host_to_title(final_title_base, entry_host)
+                entry_final_title = _append_host_to_title(
+                    entry_final_title_base, entry_host
+                )
 
                 payload = urlsafe_b64encode(
                     f"{entry_final_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
@@ -1014,9 +1035,12 @@ def _parse_results(shared_state,
                 })
                 added_entry = True
 
-                if stripped_final_title_base and stripped_final_title_base != final_title_base:
+                if (
+                    entry_stripped_title_base
+                    and entry_stripped_title_base != entry_final_title_base
+                ):
                     stripped_entry_title = _append_host_to_title(
-                        stripped_final_title_base, entry_host
+                        entry_stripped_title_base, entry_host
                     )
                     if stripped_entry_title and stripped_entry_title != entry_final_title:
                         stripped_payload = urlsafe_b64encode(
