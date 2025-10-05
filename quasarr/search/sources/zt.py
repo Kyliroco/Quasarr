@@ -578,6 +578,43 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
     return quality_text, tokens
 
 
+def _derive_language(hints):
+    tokens = set()
+    for hint in hints or ():
+        if not hint:
+            continue
+        text = str(hint).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        tokens.add(lowered)
+        for part in re.split(r"[^a-z0-9]+", lowered):
+            if part:
+                tokens.add(part)
+
+    if any("multi" in token for token in tokens):
+        return "Multi"
+
+    if any(
+        token in {"vost", "vostfr", "vo"}
+        or token.startswith("vost")
+        or token.startswith("vo")
+        or "vostfr" in token
+        for token in tokens
+    ):
+        return "English"
+
+    if any(
+        token in {"vf", "french", "truefrench"}
+        or token.startswith("vf")
+        or "french" in token
+        for token in tokens
+    ):
+        return "French"
+
+    return None
+
+
 def _contains_year_token(text, year):
     if not text or not year:
         return False
@@ -905,6 +942,19 @@ def _parse_results(shared_state,
             )
 
             title_source = title or listing_title or ""
+            language_hints = list(detail_quality_tokens or [])
+            if quality:
+                language_hints.append(quality)
+            language_hints.append(listing_title)
+            if title_source and title_source != listing_title:
+                language_hints.append(title_source)
+            if detail_title and detail_title not in {title_source, listing_title}:
+                language_hints.append(detail_title)
+            if raw_title and raw_title not in {title_source, listing_title}:
+                language_hints.append(raw_title)
+
+            release_language = _derive_language(language_hints)
+
             final_title_base = _build_final_title(
                 title_source,
                 listing_title,
@@ -1020,17 +1070,21 @@ def _parse_results(shared_state,
                     f"{hostname.upper()} prepared release '{entry_final_title}' with source {entry_payload_source}"
                 )
 
+                details = {
+                    "title": entry_final_title,
+                    "hostname": hostname,
+                    "imdb_id": release_imdb_id,
+                    "link": link,
+                    "mirror": entry_mirror,
+                    "size": size_bytes,
+                    "date": release_date,
+                    "source": entry_payload_source,
+                }
+                if release_language:
+                    details["language"] = release_language
+
                 releases.append({
-                    "details": {
-                        "title": entry_final_title,
-                        "hostname": hostname,
-                        "imdb_id": release_imdb_id,
-                        "link": link,
-                        "mirror": entry_mirror,
-                        "size": size_bytes,
-                        "date": release_date,
-                        "source": entry_payload_source,
-                    },
+                    "details": details,
                     "type": "protected",
                 })
                 added_entry = True
@@ -1051,17 +1105,21 @@ def _parse_results(shared_state,
                             f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
                         )
 
+                        stripped_details = {
+                            "title": stripped_entry_title,
+                            "hostname": hostname,
+                            "imdb_id": release_imdb_id,
+                            "link": stripped_link,
+                            "mirror": entry_mirror,
+                            "size": size_bytes,
+                            "date": release_date,
+                            "source": entry_payload_source,
+                        }
+                        if release_language:
+                            stripped_details["language"] = release_language
+
                         releases.append({
-                            "details": {
-                                "title": stripped_entry_title,
-                                "hostname": hostname,
-                                "imdb_id": release_imdb_id,
-                                "link": stripped_link,
-                                "mirror": entry_mirror,
-                                "size": size_bytes,
-                                "date": release_date,
-                                "source": entry_payload_source,
-                            },
+                            "details": stripped_details,
                             "type": "protected",
                         })
 
