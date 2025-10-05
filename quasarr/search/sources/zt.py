@@ -92,6 +92,20 @@ def _append_host_to_title(title: str, host: str) -> str:
     return f"{title}.{host_component.capitalize()}"
 
 
+def _append_language_to_title(title: str, language: str) -> str:
+    if not title or not language:
+        return title
+
+    normalized = language.strip().lower()
+    if normalized != "french":
+        return title
+
+    if re.search(r"(?i)\.french(?:\.|$)", title):
+        return title
+
+    return f"{title}.French"
+
+
 def _extract_supported_mirrors(detail_soup):
     """
     Parcourt les blocs <div class="postinfo"> et extrait les mirrors supportés.
@@ -962,6 +976,11 @@ def _parse_results(shared_state,
                 detail_quality_tokens,
                 quality,
             )
+
+            title_language_tag = release_language
+            final_title_base = _append_language_to_title(
+                final_title_base, title_language_tag
+            )
             if request_is_sonarr and requested_episode_num is not None:
                 final_title_base = _ensure_episode_tag(
                     final_title_base, requested_season_num, requested_episode_num
@@ -976,6 +995,9 @@ def _parse_results(shared_state,
                     release_year,
                     detail_quality_tokens,
                     quality,
+                )
+                stripped_final_title_base = _append_language_to_title(
+                    stripped_final_title_base, title_language_tag
                 )
                 if request_is_sonarr and requested_episode_num is not None:
                     stripped_final_title_base = _ensure_episode_tag(
