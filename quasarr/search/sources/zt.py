@@ -7,6 +7,7 @@
 import html
 import re
 import time
+import traceback
 import unicodedata
 from base64 import urlsafe_b64encode
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
@@ -525,8 +526,9 @@ def _normalize_series_quality_hint(text):
 
 
 def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens):
+    langage = None
     if not is_series_request:
-        return quality_text, list(detail_tokens or [])
+        return quality_text,langage, list(detail_tokens or [])
 
     tokens = list(detail_tokens or [])
     hints = tokens[:]
@@ -546,13 +548,14 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         if normalized_hint:
             normalized_hints.append(normalized_hint)
     normalized_set = set(normalized_hints)
-
+    
     resolution = None
     if (
         {"vf hd", "vfhd"} & normalized_set
         or ("vf" in normalized_set and "hd" in normalized_set)
     ):
         resolution = "720p"
+        langage = "FRENCH"
     elif (
         {"vostfr hd", "vostfrhd"} & normalized_set
         or ("vostfr" in normalized_set and "hd" in normalized_set)
@@ -560,8 +563,10 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         resolution = "720p"
     elif "vf" in normalized_set:
         resolution = "480p"
+        langage = "FRENCH"
     elif "vostfr" in normalized_set:
         resolution = "480p"
+    print(f"resolution {resolution}")
 
     if not resolution:
         return quality_text, tokens
@@ -575,7 +580,7 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
     else:
         quality_text = resolution
 
-    return quality_text, tokens
+    return quality_text,langage, tokens
 
 
 def _contains_year_token(text, year):
@@ -898,12 +903,12 @@ def _parse_results(shared_state,
             if not release_year:
                 release_year = detail_year
 
-            quality, detail_quality_tokens = _coerce_series_quality_tokens(
+            quality,language, detail_quality_tokens = _coerce_series_quality_tokens(
                 request_is_sonarr,
                 quality,
                 detail_quality_tokens,
             )
-
+            print(f"langage {language}")
             title_source = title or listing_title or ""
             final_title_base = _build_final_title(
                 title_source,
@@ -973,23 +978,36 @@ def _parse_results(shared_state,
                         )
                         continue
 
-                entry_payload_source = _attach_episode_fragment(entry_url, target_episode)
+                entry_episode_for_payload = target_episode
+                if (
+                    entry_episode_for_payload is None
+                    and len(entry_episodes) == 1
+                ):
+                    entry_episode_for_payload = next(iter(entry_episodes))
+
+                entry_payload_source = _attach_episode_fragment(
+                    entry_url, entry_episode_for_payload
+                )
                 entry_mirror = entry_host or mirror
                 if entry_mirror is None:
                     entry_mirror = "None"
 
-                entry_final_title = _append_host_to_title(final_title_base, entry_host)
-
-                payload = urlsafe_b64encode(
-                    f"{entry_final_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
-                ).decode("utf-8")
+                entry_final_title = _append_host_to_title(f"{final_title_base}.{language}", entry_host)
+                if language:
+                    payload = urlsafe_b64encode(
+                        f"{entry_final_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                    ).decode("utf-8")
+                else:
+                    payload = urlsafe_b64encode(
+                        f"{entry_final_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                    ).decode("utf-8")
 
                 link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
 
                 debug(
                     f"{hostname.upper()} prepared release '{entry_final_title}' with source {entry_payload_source}"
                 )
-
+                print(f"entry_final_title {entry_final_title}")
                 releases.append({
                     "details": {
                         "title": entry_final_title,
@@ -1004,23 +1022,23 @@ def _parse_results(shared_state,
                     "type": "protected",
                 })
                 added_entry = True
-
+                print(f"stripped_final_title_base {stripped_final_title_base}")
                 if stripped_final_title_base and stripped_final_title_base != final_title_base:
                     stripped_entry_title = _append_host_to_title(
                         stripped_final_title_base, entry_host
                     )
                     if stripped_entry_title and stripped_entry_title != entry_final_title:
                         stripped_payload = urlsafe_b64encode(
-                            f"{stripped_entry_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
+                            f"{stripped_entry_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
                         ).decode("utf-8")
 
                         stripped_link = (
                             f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
                         )
-
+                        print(f"stripped_entry_title {stripped_entry_title}")
                         releases.append({
                             "details": {
-                                "title": stripped_entry_title,
+                                "title": f"{stripped_entry_title}.{language}",
                                 "hostname": hostname,
                                 "imdb_id": release_imdb_id,
                                 "link": stripped_link,
@@ -1038,6 +1056,7 @@ def _parse_results(shared_state,
                 )
         except Exception as exc:
             debug(f"Error parsing {hostname.upper()} card: {exc}")
+            traceback.print_exc()
             continue
 
     debug(f"{hostname.upper()} generated {len(releases)} releases from {base_url}")
@@ -1134,11 +1153,7 @@ def zt_search(shared_state,
 
     imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
-        if season:
-            localized = get_localized_title(shared_state, imdb_id, 'fr')
-            original = None
-        else:
-            localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
+        localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
