@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from quasarr.providers.imdb_metadata import get_localized_title
+from quasarr.providers.imdb_metadata import get_localized_title, get_type
 from quasarr.providers.log import info, debug
 from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
@@ -536,11 +536,11 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         hints.append(quality_text)
 
     if not hints:
-        return quality_text, tokens
+        return quality_text,langage, tokens
 
     for hint in hints:
         if _RESOLUTION_TOKEN_PATTERN.search(str(hint or "")):
-            return quality_text, tokens
+            return quality_text,langage, tokens
 
     normalized_hints = []
     for hint in hints:
@@ -569,7 +569,7 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
     print(f"resolution {resolution}")
 
     if not resolution:
-        return quality_text, tokens
+        return quality_text,langage, tokens
 
     if not any(_RESOLUTION_TOKEN_PATTERN.search(str(token or "")) for token in tokens):
         tokens.append(resolution)
@@ -663,6 +663,7 @@ def _build_final_title(title_source,
 
 
 _EPISODE_TAG_REGEX = re.compile(r"(?i)S\d{1,3}E\d{1,3}")
+_SEASON_TAG_REGEX = re.compile(r"(?i)\bS(\d{1,3})\b")
 
 
 def _ensure_episode_tag(title, season, episode):
@@ -692,6 +693,21 @@ def _ensure_episode_tag(title, season, episode):
         return season_pattern.sub(_inject_episode, title, count=1)
 
     return f"{title}.{season_tag}{episode_tag}"
+
+
+def _extract_season_from_title(title):
+    if not title:
+        return None
+
+    normalized = title.replace(".", " ")
+    match = _SEASON_TAG_REGEX.search(normalized)
+    if not match:
+        return None
+
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _attach_episode_fragment(url, episode):
@@ -917,6 +933,13 @@ def _parse_results(shared_state,
                 detail_quality_tokens,
                 quality,
             )
+            base_season_number = requested_season_num
+            if base_season_number is None:
+                base_season_number = _extract_season_from_title(final_title_base)
+            if base_season_number is None:
+                base_season_number = _extract_season_from_title(title_source)
+            if base_season_number is None:
+                base_season_number = _extract_season_from_title(listing_title)
             if request_is_sonarr and requested_episode_num is not None:
                 final_title_base = _ensure_episode_tag(
                     final_title_base, requested_season_num, requested_episode_num
@@ -985,6 +1008,22 @@ def _parse_results(shared_state,
                 ):
                     entry_episode_for_payload = next(iter(entry_episodes))
 
+                entry_episode_for_title = entry_episode_for_payload
+                final_title_with_episode = final_title_base
+                stripped_title_with_episode = stripped_final_title_base
+                if entry_episode_for_title is not None:
+                    final_title_with_episode = _ensure_episode_tag(
+                        final_title_with_episode,
+                        base_season_number,
+                        entry_episode_for_title,
+                    )
+                    if stripped_title_with_episode:
+                        stripped_title_with_episode = _ensure_episode_tag(
+                            stripped_title_with_episode,
+                            base_season_number,
+                            entry_episode_for_title,
+                        )
+
                 entry_payload_source = _attach_episode_fragment(
                     entry_url, entry_episode_for_payload
                 )
@@ -992,7 +1031,15 @@ def _parse_results(shared_state,
                 if entry_mirror is None:
                     entry_mirror = "None"
 
-                entry_final_title = _append_host_to_title(f"{final_title_base}.{language}", entry_host)
+                entry_title_for_host = (
+                    f"{final_title_with_episode}.{language}"
+                    if language
+                    else final_title_with_episode
+                )
+                entry_final_title = _append_host_to_title(
+                    entry_title_for_host,
+                    entry_host,
+                )
                 if language:
                     payload = urlsafe_b64encode(
                         f"{entry_final_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
@@ -1021,11 +1068,14 @@ def _parse_results(shared_state,
                     },
                     "type": "protected",
                 })
+                
+                
                 added_entry = True
                 print(f"stripped_final_title_base {stripped_final_title_base}")
                 if stripped_final_title_base and stripped_final_title_base != final_title_base:
                     stripped_entry_title = _append_host_to_title(
-                        stripped_final_title_base, entry_host
+                        stripped_title_with_episode or stripped_final_title_base,
+                        entry_host
                     )
                     if stripped_entry_title and stripped_entry_title != entry_final_title:
                         stripped_payload = urlsafe_b64encode(
@@ -1063,15 +1113,15 @@ def _parse_results(shared_state,
     return releases
 
 
-def _get_category(request_from):
+def _get_category(request_from,genres=[]):
     rf = (request_from or "").lower()
     if "radarr" in rf:
         return ["films","autres-videos"]
     if "postman" in rf:
         return ["films"]
     if "sonarr" in rf:
-        if "anime" in rf or "animé" in rf or "manga" in rf:
-            return ["mangas"]
+        if "Animation" in genres :
+            return ["series","mangas"]
         return ["series"]
     return None
 
@@ -1139,7 +1189,10 @@ def zt_search(shared_state,
               season=None,
               episode=None):
     releases = []
-    categories = _get_category(request_from)
+    imdb_id = shared_state.is_imdb_id(search_string)
+    if imdb_id:
+        genres = get_type(shared_state,imdb_id,"fr")
+        categories = _get_category(request_from,genres)
     if not categories:
         debug(f"Skipping {hostname.upper()} search for unsupported requester '{request_from}'.")
         return releases
@@ -1151,9 +1204,11 @@ def zt_search(shared_state,
         return releases
 
 
-    imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
         localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
+        print(f"season : {season} episode: {episode} mirror: {mirror}")
+        localized_en , original_en = get_localized_title(shared_state,imdb_id=imdb_id,language='en',original_title=True)
+        print(f"localized_en {localized_en} original_en {original_en}")
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
@@ -1162,7 +1217,6 @@ def zt_search(shared_state,
             search_original= html.unescape(original)
         else:
             search_original = None
-        debug(localized)
     def _strip_diacritics(text):
         if not text:
             return text
