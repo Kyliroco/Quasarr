@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from quasarr.providers.imdb_metadata import get_localized_title
+from quasarr.providers.imdb_metadata import get_localized_title, get_type
 from quasarr.providers.log import info, debug
 from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
@@ -536,11 +536,11 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         hints.append(quality_text)
 
     if not hints:
-        return quality_text, tokens
+        return quality_text,langage, tokens
 
     for hint in hints:
         if _RESOLUTION_TOKEN_PATTERN.search(str(hint or "")):
-            return quality_text, tokens
+            return quality_text,langage, tokens
 
     normalized_hints = []
     for hint in hints:
@@ -569,7 +569,7 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
     print(f"resolution {resolution}")
 
     if not resolution:
-        return quality_text, tokens
+        return quality_text,langage, tokens
 
     if not any(_RESOLUTION_TOKEN_PATTERN.search(str(token or "")) for token in tokens):
         tokens.append(resolution)
@@ -1068,6 +1068,8 @@ def _parse_results(shared_state,
                     },
                     "type": "protected",
                 })
+                
+                
                 added_entry = True
                 print(f"stripped_final_title_base {stripped_final_title_base}")
                 if stripped_final_title_base and stripped_final_title_base != final_title_base:
@@ -1111,15 +1113,15 @@ def _parse_results(shared_state,
     return releases
 
 
-def _get_category(request_from):
+def _get_category(request_from,genres=[]):
     rf = (request_from or "").lower()
     if "radarr" in rf:
         return ["films","autres-videos"]
     if "postman" in rf:
         return ["films"]
     if "sonarr" in rf:
-        if "anime" in rf or "animé" in rf or "manga" in rf:
-            return ["mangas"]
+        if "Animation" in genres :
+            return ["series","mangas"]
         return ["series"]
     return None
 
@@ -1187,7 +1189,10 @@ def zt_search(shared_state,
               season=None,
               episode=None):
     releases = []
-    categories = _get_category(request_from)
+    imdb_id = shared_state.is_imdb_id(search_string)
+    if imdb_id:
+        genres = get_type(shared_state,imdb_id,"fr")
+        categories = _get_category(request_from,genres)
     if not categories:
         debug(f"Skipping {hostname.upper()} search for unsupported requester '{request_from}'.")
         return releases
@@ -1199,9 +1204,11 @@ def zt_search(shared_state,
         return releases
 
 
-    imdb_id = shared_state.is_imdb_id(search_string)
     if imdb_id:
         localized, original = get_localized_title(shared_state, imdb_id, 'fr',True)
+        print(f"season : {season} episode: {episode} mirror: {mirror}")
+        localized_en , original_en = get_localized_title(shared_state,imdb_id=imdb_id,language='en',original_title=True)
+        print(f"localized_en {localized_en} original_en {original_en}")
         if not localized:
             info(f"Could not extract title from IMDb-ID {imdb_id}")
             return releases
@@ -1210,7 +1217,6 @@ def zt_search(shared_state,
             search_original= html.unescape(original)
         else:
             search_original = None
-        debug(localized)
     def _strip_diacritics(text):
         if not text:
             return text
