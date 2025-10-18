@@ -524,15 +524,28 @@ def _strip_parenthetical_content(text):
     return re.sub(r"\s+", " ", stripped).strip()
 
 
+def _strip_diacritics(text):
+    if not text:
+        return text
+
+    normalized = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
 def _normalize_title(title):
     if not title:
         return title
 
     normalized = normalize_localized_season_episode_tags(title)
+    normalized = _strip_diacritics(normalized)
+    normalized = re.sub(r"[:：]", " ", normalized)
+    normalized = re.sub(r"[’']", "", normalized)
     normalized = normalized.replace(" - ", "-")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = normalized.replace(" ", ".")
     normalized = normalized.replace("(", "").replace(")", "")
-    return normalized
+    normalized = re.sub(r"\.+", ".", normalized)
+    return normalized.strip(".")
 
 
 def _normalize_quality_token(token):
@@ -1340,11 +1353,6 @@ def zt_search(shared_state,
             search_original= html.unescape(original)
         else:
             search_original = None
-    def _strip_diacritics(text):
-        if not text:
-            return text
-        normalized = unicodedata.normalize("NFD", text)
-        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
 
     seen_links = set()
     aggregated_releases = []
