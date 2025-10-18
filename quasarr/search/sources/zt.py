@@ -540,6 +540,7 @@ def _normalize_title(title):
     normalized = _strip_diacritics(normalized)
     normalized = re.sub(r"[:：]", " ", normalized)
     normalized = re.sub(r"[’']", "", normalized)
+    normalized = normalized.replace(",", " ")
     normalized = normalized.replace(" - ", "-")
     normalized = re.sub(r"\s+", " ", normalized).strip()
     normalized = normalized.replace(" ", ".")
