@@ -669,6 +669,33 @@ def _tokenize_title(text):
     return cleaned
 
 
+def _title_token_signature(title):
+    if not title:
+        return ()
+
+    tokens = _tokenize_title(title)
+    if not tokens:
+        return ()
+
+    return tuple(sorted(token.lower() for token in tokens))
+
+
+def _titles_equivalent(first, second):
+    if not first or not second:
+        return False
+
+    if first.strip().lower() == second.strip().lower():
+        return True
+
+    first_signature = _title_token_signature(first)
+    second_signature = _title_token_signature(second)
+
+    if first_signature and first_signature == second_signature:
+        return True
+
+    return False
+
+
 def _extract_year_from_tokens(tokens):
     if not tokens:
         return ""
@@ -1031,6 +1058,12 @@ def _parse_results(shared_state,
                     stripped_final_title_base = _ensure_episode_tag(
                         stripped_final_title_base, requested_season_num, requested_episode_num
                     )
+                if (
+                    stripped_final_title_base
+                    and final_title_base
+                    and _titles_equivalent(stripped_final_title_base, final_title_base)
+                ):
+                    stripped_final_title_base = None
 
             if detail_original_title:
                 original_title_base = _build_final_title(
@@ -1047,7 +1080,7 @@ def _parse_results(shared_state,
                 if (
                     original_title_base
                     and final_title_base
-                    and original_title_base.lower() == final_title_base.lower()
+                    and _titles_equivalent(original_title_base, final_title_base)
                 ):
                     original_title_base = None
 
@@ -1174,8 +1207,9 @@ def _parse_results(shared_state,
                     if (
                         original_title_with_episode
                         and final_title_with_episode
-                        and original_title_with_episode.lower()
-                        == final_title_with_episode.lower()
+                        and _titles_equivalent(
+                            original_title_with_episode, final_title_with_episode
+                        )
                     ):
                         original_title_with_episode = None
 
@@ -1189,7 +1223,10 @@ def _parse_results(shared_state,
                             original_title_for_host,
                             entry_host,
                         )
-                        if original_entry_title and original_entry_title != entry_final_title:
+                        if (
+                            original_entry_title
+                            and not _titles_equivalent(original_entry_title, entry_final_title)
+                        ):
                             if language:
                                 original_payload_str = (
                                     f"{original_entry_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}"
@@ -1218,15 +1255,18 @@ def _parse_results(shared_state,
                                 "type": "protected",
                             })
                 print(f"stripped_final_title_base {stripped_final_title_base}")
-                if stripped_final_title_base and stripped_final_title_base != final_title_base:
+                if (
+                    stripped_final_title_base
+                    and not _titles_equivalent(stripped_final_title_base, final_title_base)
+                ):
                     stripped_entry_title = _append_host_to_title(
                         stripped_title_with_episode or stripped_final_title_base,
                         entry_host
                     )
                     if (
                         stripped_entry_title
-                        and stripped_entry_title != entry_final_title
-                        and stripped_entry_title != original_entry_title
+                        and not _titles_equivalent(stripped_entry_title, entry_final_title)
+                        and not _titles_equivalent(stripped_entry_title, original_entry_title)
                     ):
                         stripped_payload = urlsafe_b64encode(
                             f"{stripped_entry_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}".encode("utf-8")
