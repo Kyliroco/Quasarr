@@ -483,6 +483,7 @@ def _normalize_title(title):
         ch for ch in normalized if unicodedata.category(ch) != "Mn"
     )
     normalized = normalized.replace(":", " ")
+    normalized = normalized.replace(",", " ")
     normalized = normalized.replace("'", "").replace("\u2019", "")
     normalized = normalized.replace(" - ", "-")
     normalized = normalized.replace("(", "").replace(")", "")
