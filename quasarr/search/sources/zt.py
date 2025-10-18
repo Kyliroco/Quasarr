@@ -1044,6 +1044,12 @@ def _parse_results(shared_state,
                     original_title_base = _ensure_episode_tag(
                         original_title_base, requested_season_num, requested_episode_num
                     )
+                if (
+                    original_title_base
+                    and final_title_base
+                    and original_title_base.lower() == final_title_base.lower()
+                ):
+                    original_title_base = None
 
             size_bytes = mb * 1024 * 1024 if mb else 0
             release_date = parse_date_fr(published)
@@ -1165,6 +1171,13 @@ def _parse_results(shared_state,
                             base_season_number,
                             entry_episode_for_title,
                         )
+                    if (
+                        original_title_with_episode
+                        and final_title_with_episode
+                        and original_title_with_episode.lower()
+                        == final_title_with_episode.lower()
+                    ):
+                        original_title_with_episode = None
 
                     if original_title_with_episode:
                         original_title_for_host = (
