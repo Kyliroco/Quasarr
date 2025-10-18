@@ -49,10 +49,24 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return localized_title
+    soup = None
     if original_title:
         match = re.search(r">Titre original\s*:?(.+?)</div>", response.text, re.DOTALL)
         if match:
             titre_original = match.group(1).strip()
+        if not titre_original:
+            soup = BeautifulSoup(response.text, "html.parser")
+            aka_item = soup.find(
+                "li",
+                {"data-testid": "title-details-akas"},
+            )
+            if aka_item:
+                aka_text = aka_item.find(
+                    "span",
+                    class_="ipc-metadata-list-item__list-content-item",
+                )
+                if aka_text:
+                    titre_original = aka_text.get_text(strip=True)
     try:
         match = re.findall(r'<title>(.*?) \(.*?</title>', response.text)
         localized_title = match[0]
