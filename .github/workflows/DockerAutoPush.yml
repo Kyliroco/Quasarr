@@ -4,14 +4,6 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '.github/**'
-      - '*.md'
-      - 'LICENSE'
-
-env:
-  ENDPOINT: "rix1337/docker-quasarr"
-  GHCR_ENDPOINT: "ghcr.io/rix1337/quasarr"
 
 jobs:
   build-and-push:
@@ -20,44 +12,17 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Get version from source
-        id: version
-        run: echo "version=$(python3 quasarr/providers/version.py)" >> $GITHUB_OUTPUT
-
-      - name: Get short SHA
-        id: sha
-        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU (for multi-arch builds)
-        uses: docker/setup-qemu-action@v3
-
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
           username: "${{ secrets.DOCKERUSER }}"
           password: "${{ secrets.DOCKERPASS }}"
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: "${{ github.actor }}"
-          password: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: Build and push (multi-arch)
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.ENDPOINT }}:dev
-            ${{ env.ENDPOINT }}:dev-${{ steps.sha.outputs.short }}
-            ${{ env.GHCR_ENDPOINT }}:dev
-            ${{ env.GHCR_ENDPOINT }}:dev-${{ steps.sha.outputs.short }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            kyliroco/quasarr:latest
