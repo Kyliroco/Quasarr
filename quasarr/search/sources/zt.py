@@ -758,27 +758,23 @@ def _parse_results(shared_state,
 
             require_episode_verification = False
             if search_string is not None:
-                if not shared_state.is_valid_release(raw_title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, reject_reason = shared_state.is_valid_release(
+                    raw_title, request_from, search_string, season, episode,
+                )
+                if not valid:
                     if (
                         request_is_sonarr
                         and season is not None
                         and episode is not None
-                        and shared_state.is_valid_release(
-                            raw_title,
-                            request_from,
-                            search_string,
-                            season,
-                            None,
-                        )
                     ):
-                        require_episode_verification = True
-                    else:
+                        valid_season_only, _ = shared_state.is_valid_release(
+                            raw_title, request_from, search_string, season, None,
+                        )
+                        if valid_season_only:
+                            require_episode_verification = True
+                    if not require_episode_verification:
                         log_event("release_filtered", source="zt",
-                                  title=raw_title, reason="is_valid_release rejected",
+                                  title=raw_title, reason=reject_reason,
                                   requester=request_from, search=search_string)
                         continue
 

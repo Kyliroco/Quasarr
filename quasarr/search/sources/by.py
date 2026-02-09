@@ -109,7 +109,8 @@ def _parse_posts(soup, shared_state, base_url, password, mirror_filter,
                     if not (RESOLUTION_REGEX.search(title) or CODEC_REGEX.search(title)):
                         continue
 
-                if not shared_state.is_valid_release(title, request_from, search_string, season, episode):
+                valid, _reject_reason = shared_state.is_valid_release(title, request_from, search_string, season, episode)
+                if not valid:
                     continue
                 if XXX_REGEX.search(title) and 'xxx' not in search_string.lower():
                     continue
