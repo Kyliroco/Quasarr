@@ -168,11 +168,12 @@ def fx_search(shared_state, start_time, request_from, search_string, mirror=None
                         link = title["href"]
                         title = shared_state.sanitize_title(title.text)
 
-                        if not shared_state.is_valid_release(title,
-                                                             request_from,
-                                                             search_string,
-                                                             season,
-                                                             episode):
+                        valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                            request_from,
+                                                                            search_string,
+                                                                            season,
+                                                                            episode)
+                        if not valid:
                             continue
 
                         try:

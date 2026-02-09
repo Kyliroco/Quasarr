@@ -342,11 +342,12 @@ def sf_search(shared_state, start_time, request_from, search_string, mirror=None
                         continue
 
                 # check down here on purpose, because the title may be modified at episode stage
-                if not shared_state.is_valid_release(title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                    request_from,
+                                                                    search_string,
+                                                                    season,
+                                                                    episode)
+                if not valid:
                     continue
 
                 payload = urlsafe_b64encode(f"{title}|{source}|{mirror}|{mb}|{password}|{imdb_id}".encode()).decode()

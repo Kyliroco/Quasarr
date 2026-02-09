@@ -8,6 +8,7 @@ import quasarr.providers.html_images as images
 from quasarr.api.arr import setup_arr_routes
 from quasarr.api.captcha import setup_captcha_routes
 from quasarr.api.config import setup_config
+from quasarr.api.debug_dashboard import setup_debug_routes
 from quasarr.api.sponsors_helper import setup_sponsors_helper_routes
 from quasarr.api.statistics import setup_statistics
 from quasarr.providers import shared_state
@@ -28,6 +29,7 @@ def get_api(shared_state_dict, shared_state_lock):
     setup_config(app, shared_state)
     setup_statistics(app, shared_state)
     setup_sponsors_helper_routes(app)
+    setup_debug_routes(app)
 
     @app.get('/')
     def index():
@@ -106,6 +108,7 @@ def get_api(shared_state_dict, shared_state_lock):
             <h2>🔧 Quick Actions</h2>
             <p><button class="btn-primary" onclick="location.href='/hostnames'">Update Hostnames</button></p>
             <p><button class="btn-primary" onclick="location.href='/statistics'">View Statistics</button></p>
+            <p><button class="btn-primary" onclick="location.href='/debug/'">Debug Dashboard</button></p>
         </div>
 
         <style>

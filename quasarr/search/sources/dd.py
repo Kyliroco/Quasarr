@@ -92,11 +92,12 @@ def dd_search(shared_state, start_time, request_from, search_string="", mirror=N
                 else:
                     title = release.get("release")
 
-                    if not shared_state.is_valid_release(title,
-                                                         request_from,
-                                                         search_string,
-                                                         season,
-                                                         episode):
+                    valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                        request_from,
+                                                                        search_string,
+                                                                        season,
+                                                                        episode)
+                    if not valid:
                         continue
 
                     imdb_id = release.get("imdbid", None)

@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
-from quasarr.providers.log import info, debug
+from quasarr.providers.log import info, debug, warning, error, log_event
 
 hostname = "zt"
 UNSUPPORTED_MIRRORS = ["nitroflare"]
@@ -166,47 +166,45 @@ def _episode_numbers_from_text(text: str):
 def get_zt_download_links(shared_state, url, mirror, title):
     base_url, target_episode = _split_episode_fragment(url)
 
-    debug(
-        f"{hostname.upper()} resolving dl-protect link for '{title}' "
-        f"(mirror={mirror}, episode={target_episode}) at {base_url}"
-    )
+    log_event("download_attempt", source="zt-dl",
+              title=title, mirror=mirror, episode=target_episode, url=base_url)
 
     normalized_mirror = _normalize_hoster_from_url(str(mirror or ""))
     if normalized_mirror in UNSUPPORTED_MIRRORS:
-        info(
-            f"{hostname.upper()} skipping unsupported host '{normalized_mirror}' for {title}"
-        )
+        log_event("download_skipped", source="zt-dl", level="WARNING",
+                  title=title, reason=f"unsupported host: {normalized_mirror}")
         return []
 
     try:
         final_url = get_final_links(base_url)
     except Exception as exc:
-        info(
-            f"{hostname.upper()} failed to transform dl-protect link for {title}: {exc}"
-        )
+        log_event("download_error", source="zt-dl", level="ERROR",
+                  title=title, reason="dl-protect resolution failed", error=str(exc),
+                  url=base_url)
         return []
 
     if not final_url:
-        info(
-            f"{hostname.upper()} resolver returned no direct link for '{title}' from {base_url}."
-        )
+        log_event("download_skipped", source="zt-dl", level="WARNING",
+                  title=title, reason="resolver returned no direct link", url=base_url)
         return []
 
     normalized_host = _normalize_hoster_from_url(final_url)
     if normalized_host in UNSUPPORTED_MIRRORS:
-        info(
-            f"{hostname.upper()} skipping unsupported host '{normalized_host}' for {title}"
-        )
+        log_event("download_skipped", source="zt-dl", level="WARNING",
+                  title=title, reason=f"unsupported resolved host: {normalized_host}")
         return []
 
-    alive, info_data = is_link_alive(final_url)
+    alive, alive_info = is_link_alive(final_url)
     if not alive:
-        debug(
-            f"{hostname.upper()} skipping dead link {final_url}"
-            f" ({info_data.get('status_code')} - {info_data.get('note')})"
-        )
+        log_event("download_skipped", source="zt-dl", level="WARNING",
+                  title=title, reason="dead link",
+                  final_url=final_url,
+                  status_code=alive_info.get("status_code"),
+                  note=alive_info.get("note"))
         return []
 
+    log_event("download_resolved", source="zt-dl", level="INFO",
+              title=title, final_url=final_url, host=normalized_host)
     return [final_url]
 
 DEFAULT_TIMEOUT = 15

@@ -92,11 +92,12 @@ def _parse_rows(
 
             # search context contains non-video releases (ebooks, games, etc.)
             if is_search:
-                if not shared_state.is_valid_release(title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                    request_from,
+                                                                    search_string,
+                                                                    season,
+                                                                    episode)
+                if not valid:
                     continue
 
                 if 'lazylibrarian' in request_from.lower():

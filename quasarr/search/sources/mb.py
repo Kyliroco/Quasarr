@@ -68,11 +68,12 @@ def _parse_posts(soup, shared_state, password, mirror_filter,
                     published = dt_obj.strftime("%a, %d %b %Y %H:%M:%S +0000")
 
             if is_search:
-                if not shared_state.is_valid_release(title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                    request_from,
+                                                                    search_string,
+                                                                    season,
+                                                                    episode)
+                if not valid:
                     continue
 
                 # drop .XXX. unless user explicitly searched xxx

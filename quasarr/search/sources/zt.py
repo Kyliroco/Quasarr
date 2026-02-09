@@ -7,7 +7,6 @@
 import html
 import re
 import time
-import traceback
 import unicodedata
 from base64 import urlsafe_b64encode
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
@@ -16,7 +15,8 @@ import requests
 from bs4 import BeautifulSoup, NavigableString
 
 from quasarr.providers.imdb_metadata import get_localized_title, get_type
-from quasarr.providers.log import info, debug
+from quasarr.providers.log import info, debug, warning, error, log_event
+
 from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
 hostname = "zt"
@@ -293,7 +293,7 @@ def _extract_detail_title(soup):
     if not soup:
         return None
 
-    title_tag = soup.find("h1")
+    title_tag = soup.select_one(".centersideinn h1")
     if title_tag:
         text = title_tag.get_text(strip=True)
         if text:
@@ -601,11 +601,11 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         hints.append(quality_text)
 
     if not hints:
-        return quality_text,langage, tokens
+        return quality_text, langage, tokens
 
     for hint in hints:
         if _RESOLUTION_TOKEN_PATTERN.search(str(hint or "")):
-            return quality_text,langage, tokens
+            return quality_text, langage, tokens
 
     normalized_hints = []
     for hint in hints:
@@ -631,7 +631,7 @@ def _coerce_series_quality_tokens(is_series_request, quality_text, detail_tokens
         langage = "FRENCH"
     elif "vostfr" in normalized_set:
         resolution = "480p"
-    print(f"resolution {resolution}")
+    debug(f"{hostname.upper()} coerced resolution={resolution}, language={langage}", source="zt")
 
     if not resolution:
         return quality_text,langage, tokens
@@ -867,29 +867,24 @@ def _parse_results(shared_state,
 
             require_episode_verification = False
             if search_string is not None:
-                if not shared_state.is_valid_release(raw_title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, reject_reason = shared_state.is_valid_release(
+                    raw_title, request_from, search_string, season, episode,
+                )
+                if not valid:
                     if (
                         request_is_sonarr
                         and season is not None
                         and episode is not None
-                        and shared_state.is_valid_release(
-                            raw_title,
-                            request_from,
-                            search_string,
-                            season,
-                            None,
-                        )
                     ):
-                        require_episode_verification = True
-                    else:
-                        debug(
-                            f"{hostname.upper()} filtered title '{raw_title}' "
-                            f"for requester={request_from}, search='{search_string}'"
+                        valid_season_only, _ = shared_state.is_valid_release(
+                            raw_title, request_from, search_string, season, None,
                         )
+                        if valid_season_only:
+                            require_episode_verification = True
+                    if not require_episode_verification:
+                        log_event("release_filtered", source="zt",
+                                  title=raw_title, reason=reject_reason,
+                                  requester=request_from, search=search_string)
                         continue
 
             if "lazylibrarian" in request_lower:
@@ -983,10 +978,10 @@ def _parse_results(shared_state,
                         and requested_episode not in available_episode_numbers
                     )
                 ):
-                    debug(
-                        f"{hostname.upper()} skipping '{title}' because episode "
-                        f"{episode} not found in detail page"
-                    )
+                    log_event("release_filtered", source="zt",
+                              title=title, reason="episode not found in detail page",
+                              requested_episode=episode,
+                              available_episodes=str(sorted(available_episode_numbers)))
                     continue
                 target_episode = requested_episode
             elif request_is_sonarr and requested_episode_num is not None:
@@ -995,16 +990,16 @@ def _parse_results(shared_state,
                     available_episode_numbers
                     and target_episode not in available_episode_numbers
                 ):
-                    debug(
-                        f"{hostname.upper()} skipping '{title}' because episode "
-                        f"{episode} not provided by card"
-                    )
+                    log_event("release_filtered", source="zt",
+                              title=title, reason="episode not provided by card",
+                              requested_episode=episode,
+                              available_episodes=str(sorted(available_episode_numbers)))
                     continue
 
             if not detail_download_entries:
-                debug(
-                    f"{hostname.upper()} detail page provided no download entries for '{title}'"
-                )
+                log_event("release_filtered", source="zt",
+                          title=title, reason="no download entries in detail page",
+                          source_url=source)
                 continue
 
             mb = detail_size_mb or 0
@@ -1022,7 +1017,7 @@ def _parse_results(shared_state,
                 quality,
                 detail_quality_tokens,
             )
-            print(f"langage {language}")
+            debug(f"{hostname.upper()} quality={quality}, language={language}, tokens={detail_quality_tokens}", source="zt")
             title_source = title or listing_title or ""
             final_title_base = _build_final_title(
                 title_source,
@@ -1085,7 +1080,12 @@ def _parse_results(shared_state,
                     original_title_base = None
 
             size_bytes = mb * 1024 * 1024 if mb else 0
-            release_date = parse_date_fr(published)
+            try:
+                release_date = parse_date_fr(published)
+            except Exception as exc:
+                log_event("date_parse_error", source="zt", level="WARNING",
+                          raw_date=published, title=title, error=str(exc))
+                release_date = datetime.now(timezone(timedelta(hours=1))).isoformat()
 
             non_rapidgator_entries = [
                 entry for entry in detail_download_entries if entry.get("host") != "rapidgator"
@@ -1176,10 +1176,20 @@ def _parse_results(shared_state,
 
                 link = f"{shared_state.values['internal_address']}/download/?payload={payload}"
 
-                debug(
-                    f"{hostname.upper()} prepared release '{entry_final_title}' with source {entry_payload_source}"
-                )
-                print(f"entry_final_title {entry_final_title}")
+                if language:
+                    payload_readable = f"{entry_final_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}"
+                else:
+                    payload_readable = f"{entry_final_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}"
+                log_event("payload_built", source="zt",
+                          title=entry_final_title,
+                          payload_decoded=payload_readable,
+                          mirror=entry_mirror)
+                log_event("release_accepted", source="zt",
+                          title=entry_final_title,
+                          host=entry_host,
+                          size_mb=mb,
+                          imdb_id=release_imdb_id,
+                          source_url=entry_payload_source)
                 releases.append({
                     "details": {
                         "title": entry_final_title,
@@ -1259,6 +1269,8 @@ def _parse_results(shared_state,
                     stripped_final_title_base
                     and not _titles_equivalent(stripped_final_title_base, final_title_base)
                 ):
+
+
                     stripped_entry_title = _append_host_to_title(
                         stripped_title_with_episode or stripped_final_title_base,
                         entry_host
@@ -1275,7 +1287,7 @@ def _parse_results(shared_state,
                         stripped_link = (
                             f"{shared_state.values['internal_address']}/download/?payload={stripped_payload}"
                         )
-                        print(f"stripped_entry_title {stripped_entry_title}")
+                        debug(f"{hostname.upper()} also adding stripped variant: {stripped_entry_title}", source="zt")
                         releases.append({
                             "details": {
                                 "title": f"{stripped_entry_title}.{language}",
@@ -1295,8 +1307,7 @@ def _parse_results(shared_state,
                     f"{hostname.upper()} no eligible download entries remained for '{title}'"
                 )
         except Exception as exc:
-            debug(f"Error parsing {hostname.upper()} card: {exc}")
-            traceback.print_exc()
+            error(f"Error parsing {hostname.upper()} card: {exc}", source="zt")
             continue
 
     debug(f"{hostname.upper()} generated {len(releases)} releases from {base_url}")
@@ -1440,7 +1451,7 @@ def zt_search(shared_state,
                     current_host = zt
                     soup = BeautifulSoup(response.text, "html.parser")
                     cards = soup.select("div.cover_global")
-                    debug(f"len cards : len(cards)")
+                    debug(f"{hostname.upper()} found {len(cards)} cards on page {page}", source="zt")
                     found = _parse_results(
                         shared_state,
                         soup,
@@ -1485,6 +1496,10 @@ def zt_search(shared_state,
                     info(message)
                     raise RuntimeError(message) from exc
 
+    log_event("search_request", source="zt", level="INFO",
+              query=search_string, requester=request_from,
+              season=season, episode=episode, mirror=mirror)
+
     perform_query(search_string)
     accentless = _strip_diacritics(search_string)
     if accentless and accentless != search_string:
@@ -1494,5 +1509,7 @@ def zt_search(shared_state,
         search_original_accentless = _strip_diacritics(search_original)
         if search_original_accentless and search_original_accentless != search_original:
             perform_query(search_original_accentless)
-    debug(f"Time taken: {time.time() - start_time:.2f}s ({hostname})")
+    log_event("search_complete", source="zt", level="INFO",
+              query=search_string, results_count=len(aggregated_releases),
+              time_seconds=round(time.time() - start_time, 2))
     return aggregated_releases
