@@ -702,71 +702,63 @@ def is_valid_release(title: str,
                      request_from: str,
                      search_string: str,
                      season: int = None,
-                     episode: int = None) -> bool:
+                     episode: int = None):
     """
-    Return True if the given release title is valid for the given search parameters.
-    - title: the release title to test
-    - request_from: user agent, contains 'Radarr' for movie searches or 'Sonarr' for TV searches
-    - search_string: the original search phrase (could be an IMDb id or plain text)
-    - season: desired season number (or None)
-    - episode: desired episode number (or None)
+    Return (True, None) if the given release title is valid for the given
+    search parameters, or (False, reason_string) explaining why it was rejected.
     """
     title = normalize_localized_season_episode_tags(title)
 
     try:
-        # Determine whether this is a movie or TV search
         rf = request_from.lower()
         is_movie_search = 'radarr' in rf
         is_tv_search = 'sonarr' in rf
         is_docs_search = 'lazylibrarian' in rf
 
-        # if search string is NOT an imdb id check search_string_in_sanitized_title - if not match, its not valid
         if not is_docs_search and not is_imdb_id(search_string):
             if not search_string_in_sanitized_title(search_string, title):
-                debug(f"Skipping {title!r} as it doesn't match sanitized search string: {search_string!r}")
-                return False
+                reason = f"title {title!r} doesn't match search string {search_string!r}"
+                debug(f"Skipping: {reason}")
+                return False, reason
 
-
-        # if it's a movie search, don't allow any TV show titles (check for NO season or episode tags in the title)
         if is_movie_search:
             if not MOVIE_REGEX.match(title):
-                debug(f"Skipping {title!r} as title doesn't match movie regex: {MOVIE_REGEX.pattern}")
-                return False
-            return True
+                reason = f"title {title!r} contains S/E tags — looks like a TV show, not a movie"
+                debug(f"Skipping: {reason}")
+                return False, reason
+            return True, None
 
-        # if it's a TV show search, don't allow any movies (check for season or episode tags in the title)
         if is_tv_search:
-            # must have some S/E tag present
             if not SEASON_EP_REGEX.search(title):
-                debug(f"Skipping {title!r} as title doesn't match TV show regex: {SEASON_EP_REGEX.pattern}")
-                return False
-            # if caller specified a season or episode, double‑check the match
+                reason = f"title {title!r} has no S/E tag — looks like a movie, not a TV show"
+                debug(f"Skipping: {reason}")
+                return False, reason
             if season is not None or episode is not None:
                 if not match_in_title(title, season, episode):
-                    debug(f"Skipping {title!r} as it doesn't match season {season} and episode {episode}")
-                    return False
-            return True
+                    reason = f"title {title!r} doesn't match S{season}E{episode}"
+                    debug(f"Skipping: {reason}")
+                    return False, reason
+            return True, None
 
-        # if it's a document search, it should not contain Movie or TV show tags
         if is_docs_search:
-            # must NOT have any S/E tag present
             if SEASON_EP_REGEX.search(title):
-                debug(f"Skipping {title!r} as title matches TV show regex: {SEASON_EP_REGEX.pattern}")
-                return False
-            return True
+                reason = f"title {title!r} contains S/E tags — not a document"
+                debug(f"Skipping: {reason}")
+                return False, reason
+            return True, None
 
-        # unknown search source — reject by default
-        debug(f"Skipping {title!r} as search source is unknown: {request_from!r}")
-        return False
+        reason = f"unknown requester {request_from!r}"
+        debug(f"Skipping {title!r}: {reason}")
+        return False, reason
 
     except Exception as e:
-        # log exception message and short stack trace
         tb = traceback.format_exc()
+        reason = f"exception: {e!r}"
         debug(f"Exception in is_valid_release: {e!r}\n{tb}"
               f"is_valid_release called with "
               f"title={title!r}, request_from={request_from!r}, "
               f"search_string={search_string!r}, season={season!r}, episode={episode!r}")
-        return False
+        return False, reason
 
 
 def normalize_magazine_title(title: str) -> str:

@@ -162,11 +162,12 @@ def _parse_results(shared_state,
                 continue
 
             if search_string is not None:
-                if not shared_state.is_valid_release(title,
-                                                     request_from,
-                                                     search_string,
-                                                     season,
-                                                     episode):
+                valid, _reject_reason = shared_state.is_valid_release(title,
+                                                                    request_from,
+                                                                    search_string,
+                                                                    season,
+                                                                    episode)
+                if not valid:
                     debug(
                         f"{hostname.upper()} filtered title '{title}' "
                         f"for requester={request_from}, search='{search_string}'"
