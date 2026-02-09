@@ -292,7 +292,7 @@ def _extract_detail_title(soup):
     if not soup:
         return None
 
-    title_tag = soup.find("h1")
+    title_tag = soup.select_one(".centersideinn h1")
     if title_tag:
         text = title_tag.get_text(strip=True)
         if text:
