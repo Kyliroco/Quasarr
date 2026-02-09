@@ -17,7 +17,7 @@ from quasarr.downloads import download
 from quasarr.downloads import packages
 from quasarr.downloads.packages import get_packages, delete_package
 from quasarr.providers import shared_state
-from quasarr.providers.log import info, debug
+from quasarr.providers.log import info, debug, warning, error, log_event
 from quasarr.providers.version import get_version
 from quasarr.search import get_search_results
 from quasarr.storage.config import Config
@@ -64,9 +64,16 @@ def setup_arr_routes(app):
         try:
             decoded_payload = urlsafe_b64decode(payload).decode("utf-8").split("|")
         except Exception as exc:
+            log_event("payload_decode_error", source="api", level="ERROR",
+                      raw_payload=payload[:100] if payload else None, error=str(exc))
             abort(400, f"Invalid payload: {exc}")
 
+        log_event("payload_decoded", source="api",
+                  fields=str(decoded_payload), field_count=len(decoded_payload))
+
         if len(decoded_payload) < 5:
+            log_event("payload_decode_error", source="api", level="ERROR",
+                      fields=str(decoded_payload), error="expected at least 5 fields")
             abort(400, "Le payload ne contient pas le bon nombre de paramètres")
 
         title = decoded_payload[0]
@@ -124,8 +131,11 @@ def setup_arr_routes(app):
             password = root.find(".//file").attrib.get("password")
             imdb_id = root.find(".//file").attrib.get("imdb_id")
 
-            debug(f'Attempting download for "{title}"')
             request_from = request.headers.get('User-Agent')
+            log_event("download_request", source="api", level="INFO",
+                      title=title, url=url, mirror=mirror,
+                      size_mb=size_mb, imdb_id=imdb_id, requester=request_from)
+
             downloaded = download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id)
             try:
                 success = downloaded["success"]
@@ -133,12 +143,14 @@ def setup_arr_routes(app):
                 title = downloaded["title"]
 
                 if success:
-                    debug(f'"{title}" added successfully!')
+                    log_event("download_success", source="api", level="INFO",
+                              title=title, package_id=package_id)
                 else:
-                    info(f'"{title}" error! See log for details.')
+                    log_event("download_failed", source="api", level="WARNING",
+                              title=title, package_id=package_id)
                 nzo_ids.append(package_id)
             except KeyError:
-                info(f'Failed to download "{title}" - no package_id returned')
+                error(f'Failed to download "{title}" - no package_id returned', source="api")
         return {
             "status": True,
             "nzo_ids": nzo_ids
@@ -236,8 +248,10 @@ def setup_arr_routes(app):
                     mirror = None if mirror == "None" else mirror
 
                     nzo_ids = []
-                    debug(f'Attempting download for "{title}"')
                     request_from = "lazylibrarian"
+                    log_event("download_request", source="api", level="INFO",
+                              title=title, url=url, mirror=mirror,
+                              size_mb=size_mb, imdb_id=imdb_id, requester=request_from)
 
                     downloaded = download(
                         shared_state,
@@ -257,12 +271,14 @@ def setup_arr_routes(app):
                         title = downloaded.get("title", title)
 
                         if success:
-                            debug(f'"{title}" added successfully!')
+                            log_event("download_success", source="api", level="INFO",
+                                      title=title, package_id=package_id)
                         else:
-                            info(f'"{title}" error ! See log for details.')
+                            log_event("download_failed", source="api", level="WARNING",
+                                      title=title, package_id=package_id)
                         nzo_ids.append(package_id)
                     except KeyError:
-                        info(f'Failed to download "{title}" - no package_id returned')
+                        error(f'Failed to download "{title}" - no package_id returned', source="api")
 
                     return {
                         "status": True,
@@ -432,6 +448,9 @@ def setup_arr_routes(app):
                         if mode == 'movie':
                             # supported params: imdbid
                             imdb_id = getattr(request.query, 'imdbid', '')
+                            log_event("api_request", source="api", level="INFO",
+                                      method="movie", requester=request_from,
+                                      imdb_id=imdb_id, mirror=mirror)
 
                             releases = get_search_results(shared_state, request_from,
                                                           imdb_id=imdb_id,
@@ -443,6 +462,11 @@ def setup_arr_routes(app):
                             imdb_id = getattr(request.query, 'imdbid', '')
                             season = getattr(request.query, 'season', None)
                             episode = getattr(request.query, 'ep', None)
+                            log_event("api_request", source="api", level="INFO",
+                                      method="tvsearch", requester=request_from,
+                                      imdb_id=imdb_id, season=season, episode=episode,
+                                      mirror=mirror)
+
                             releases = get_search_results(shared_state, request_from,
                                                           imdb_id=imdb_id,
                                                           mirror=mirror,
@@ -469,6 +493,10 @@ def setup_arr_routes(app):
                                 debug(
                                     f'Ignoring search request from {request_from} - only imdbid searches are supported')
                                 releases = [{}]  # sonarr expects this but we will not support non-imdbid searches
+
+                    log_event("api_response", source="api", level="INFO",
+                              method=mode, requester=request_from,
+                              results_count=len(releases))
 
                     items = ""
                     for release in releases:
