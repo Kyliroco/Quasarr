@@ -3,6 +3,7 @@
 # Project by https://github.com/rix1337
 
 import html
+import json
 import re
 from datetime import datetime, timedelta
 from json import loads
@@ -48,10 +49,24 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return localized_title
+    soup = None
     if original_title:
         match = re.search(r">Titre original\s*:?(.+?)</div>", response.text, re.DOTALL)
         if match:
             titre_original = match.group(1).strip()
+        if not titre_original:
+            soup = BeautifulSoup(response.text, "html.parser")
+            aka_item = soup.find(
+                "li",
+                {"data-testid": "title-details-akas"},
+            )
+            if aka_item:
+                aka_text = aka_item.find(
+                    "span",
+                    class_="ipc-metadata-list-item__list-content-item",
+                )
+                if aka_text:
+                    titre_original = aka_text.get_text(strip=True)
     try:
         match = re.findall(r'<title>(.*?) \(.*?</title>', response.text)
         localized_title = match[0]
@@ -76,6 +91,58 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
     print(f"title: {localized_title} original : {titre_original}")
     return localized_title ,titre_original
 
+def get_type(shared_state, imdb_id, language='de'):
+    headers = {
+        'Accept-Language': language,
+        'User-Agent': shared_state.values["user_agent"]
+    }
+
+    try:
+        response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
+    except Exception as e:
+        info(f"Error loading IMDb metadata for {imdb_id}: {e}")
+        return []
+    # print(response.text)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # 1) Chercher le bloc JSON-LD principal et parser `genre`
+    genres = []
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or tag.text or "")
+        except Exception:
+            continue
+
+        # Plusieurs possibilités : dict seul, ou liste de dicts
+        candidates = data if isinstance(data, list) else [data]
+        for obj in candidates:
+            if not isinstance(obj, dict):
+                continue
+            typ = obj.get("@type", "")
+            # IMDb met souvent TVSeries/Movie ici
+            if ("TVSeries" in typ) or ("Movie" in typ) or ("TVEpisode" in typ):
+                g = obj.get("genre")
+                if not g:
+                    continue
+                if isinstance(g, str):
+                    genres.extend([x.strip() for x in g.split(",") if x.strip()])
+                elif isinstance(g, list):
+                    genres.extend([str(x).strip() for x in g if str(x).strip()])
+
+    # Dédup + ordre conservé
+    print(genres)
+    seen = set()
+    genres_unique = [g for g in genres if not (g in seen or seen.add(g))]
+    if genres_unique:
+        return genres_unique
+
+    # 2) Fallback : essayer de lire depuis <meta property="og:title"> (ex: "... | Animation, Action, Aventure")
+    og_title = soup.find("meta", {"property": "og:title"})
+    if og_title and og_title.get("content"):
+        part = og_title["content"].split("|")[-1]  # " Animation, Action, Aventure"
+        alt = [x.strip() for x in part.split(",") if x.strip()]
+        if alt:
+            return alt
 
 def get_clean_title(title):
     try:
