@@ -322,7 +322,11 @@ Usage:
 import time
 
 # ---------------- CONFIGURATION ----------------
-API_KEY = "e8afb42ed3de82c60392cfea55ecf555"                         # <-- remplace par ta clé 2captcha
+import os
+
+API_KEY = os.getenv("API_KEY")  # None si absente
+if not API_KEY:
+    raise RuntimeError("API_KEY non définie")                       # <-- remplace par ta clé 2captcha
 MAX_WAIT_SECONDS = 200                              # timeout max pour la résolution
 POLL_INTERVAL = 5                                   # intervalle de polling (s)
 # ------------------------------------------------
