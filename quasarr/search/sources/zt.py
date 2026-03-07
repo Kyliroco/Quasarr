@@ -1321,7 +1321,7 @@ def _get_category(request_from,genres=[]):
     if "postman" in rf:
         return ["films"]
     if "sonarr" in rf:
-        if "Animation" in (genres or []):
+        if "Animation" in genres:
             return ["series","mangas"]
         return ["series"]
     return None

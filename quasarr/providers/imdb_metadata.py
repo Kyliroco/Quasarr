@@ -130,10 +130,10 @@ def get_type(shared_state, imdb_id, language='de'):
                     genres.extend([str(x).strip() for x in g if str(x).strip()])
 
     # Dédup + ordre conservé
-    print(genres)
     seen = set()
     genres_unique = [g for g in genres if not (g in seen or seen.add(g))]
     if genres_unique:
+        debug(f"IMDb genres for {imdb_id}: {genres_unique}")
         return genres_unique
 
     # 2) Fallback : essayer de lire depuis <meta property="og:title"> (ex: "... | Animation, Action, Aventure")
@@ -142,7 +142,11 @@ def get_type(shared_state, imdb_id, language='de'):
         part = og_title["content"].split("|")[-1]  # " Animation, Action, Aventure"
         alt = [x.strip() for x in part.split(",") if x.strip()]
         if alt:
+            debug(f"IMDb genres for {imdb_id} (fallback): {alt}")
             return alt
+
+    info(f"Could not extract genres from IMDb for {imdb_id}", source="imdb")
+    return []
 
 def get_clean_title(title):
     try:
