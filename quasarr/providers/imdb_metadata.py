@@ -100,7 +100,7 @@ def get_type(shared_state, imdb_id, language='de'):
         'Accept-Language': language,
         'User-Agent': shared_state.values["user_agent"]
     }
-
+    info(headers)
     try:
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
         info(response.text)
