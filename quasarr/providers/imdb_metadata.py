@@ -50,7 +50,7 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return localized_title, None
     debug(f"IMDb response status for {imdb_id}: {response.status_code}")
-    if response.status_code != 200:
+    if response.status_code >= 300:
         info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
         return None, None
     soup = None
@@ -107,7 +107,7 @@ def get_type(shared_state, imdb_id, language='de'):
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return []
     debug(f"IMDb response status for {imdb_id}: {response.status_code}")
-    if response.status_code != 200:
+    if response.status_code >= 300:
         info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
         return []
     soup = BeautifulSoup(response.text, "html.parser")
