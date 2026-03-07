@@ -20,7 +20,7 @@ def get_poster_link(shared_state, imdb_id):
     if imdb_id:
         headers = {'User-Agent': shared_state.values["user_agent"]}
         request = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10).text
-        info(request)
+        debug(request)
         soup = BeautifulSoup(request, "html.parser")
         try:
             poster_set = soup.find('div', class_='ipc-poster').div.img[
@@ -103,6 +103,7 @@ def get_type(shared_state, imdb_id, language='de'):
 
     try:
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
+        info(response)
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return []
