@@ -3,9 +3,10 @@
 # Project by https://github.com/rix1337
 
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from quasarr.providers.log import info, debug
+from quasarr.providers.log import info, debug, error
 from quasarr.search.sources.al import al_feed, al_search
 from quasarr.search.sources.by import by_feed, by_search
 from quasarr.search.sources.dd import dd_search, dd_feed
@@ -133,7 +134,9 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
                 result = future.result()
                 results.extend(result)
             except Exception as e:
-                info(f"An error occurred: {e}")
+                tb = traceback.extract_tb(e.__traceback__)
+                location = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "unknown location"
+                error(f"An error occurred at {location}: {e}", source="search")
 
     elapsed_time = time.time() - start_time
     info(f"Providing {len(results)} releases to {request_from} for {stype}. Time taken: {elapsed_time:.2f} seconds")
