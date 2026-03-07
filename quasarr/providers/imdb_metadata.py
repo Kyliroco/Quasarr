@@ -2,163 +2,150 @@
 # Quasarr
 # Project by https://github.com/rix1337
 
-import html
-import json
 import re
 from datetime import datetime, timedelta
-from json import loads
 from urllib.parse import quote
 
 import requests
-from bs4 import BeautifulSoup
 
 from quasarr.providers.log import info, debug
 
+# ---------------------------------------------------------------------------
+# TMDB genre ID → English name (stable IDs, rarely change)
+# ---------------------------------------------------------------------------
+_TMDB_GENRES = {
+    16: "Animation",
+    28: "Action",
+    12: "Adventure",
+    35: "Comedy",
+    80: "Crime",
+    99: "Documentary",
+    18: "Drama",
+    10751: "Family",
+    14: "Fantasy",
+    36: "History",
+    27: "Horror",
+    10402: "Music",
+    9648: "Mystery",
+    10749: "Romance",
+    878: "Science Fiction",
+    53: "Thriller",
+    10752: "War",
+    37: "Western",
+    10759: "Action & Adventure",
+    10762: "Kids",
+    10763: "News",
+    10764: "Reality",
+    10765: "Sci-Fi & Fantasy",
+    10766: "Soap",
+    10767: "Talk",
+    10768: "War & Politics",
+}
+
+# Language code → TMDB locale (e.g. 'fr' → 'fr-FR')
+_LANG_TO_LOCALE = {
+    'fr': 'fr-FR',
+    'de': 'de-DE',
+    'en': 'en-US',
+    'es': 'es-ES',
+    'it': 'it-IT',
+    'pt': 'pt-PT',
+    'ja': 'ja-JP',
+}
+
+
+def _tmdb_token():
+    from quasarr.storage.config import Config
+    return Config('TMDB').get('token') or ''
+
+
+def _tmdb_find(imdb_id, language='fr-FR'):
+    """Call TMDB /find/{imdb_id} and return (result_dict, media_type) or (None, None)."""
+    token = _tmdb_token()
+    if not token:
+        info("TMDB token not configured — set it in config", source="tmdb")
+        return None, None
+
+    headers = {'Authorization': f'Bearer {token}'}
+    url = f'https://api.themoviedb.org/3/find/{imdb_id}?external_source=imdb_id&language={language}'
+    debug(f"TMDB request: {url}", source="tmdb")
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
+        info(f"TMDB request failed for {imdb_id}: {e}", source="tmdb")
+        return None, None
+
+    info(f"TMDB response for {imdb_id}: HTTP {r.status_code}", source="tmdb")
+    if r.status_code != 200:
+        info(f"TMDB returned HTTP {r.status_code} for {imdb_id}", source="tmdb")
+        return None, None
+
+    data = r.json()
+    tv = data.get('tv_results', [])
+    movies = data.get('movie_results', [])
+
+    if tv:
+        debug(f"TMDB: tv result for {imdb_id}: {tv[0]}", source="tmdb")
+        return tv[0], 'tv'
+    if movies:
+        debug(f"TMDB: movie result for {imdb_id}: {movies[0]}", source="tmdb")
+        return movies[0], 'movie'
+
+    info(f"TMDB: no results found for {imdb_id}", source="tmdb")
+    return None, None
+
 
 def get_poster_link(shared_state, imdb_id):
-    poster_link = None
-    if imdb_id:
-        headers = {'User-Agent': shared_state.values["user_agent"]}
-        request = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10).text
-        soup = BeautifulSoup(request, "html.parser")
-        try:
-            poster_set = soup.find('div', class_='ipc-poster').div.img[
-                "srcset"]  # contains links to posters in ascending resolution
-            poster_links = [x for x in poster_set.split(" ") if
-                            len(x) > 10]  # extract all poster links ignoring resolution info
-            poster_link = poster_links[-1]  # get the highest resolution poster
-        except:
-            pass
+    if not imdb_id:
+        return None
 
-    if not poster_link:
-        debug(f"Could not get poster title for {imdb_id} from IMDb")
+    result, _ = _tmdb_find(imdb_id)
+    poster_path = (result or {}).get('poster_path')
+    if poster_path:
+        return f'https://image.tmdb.org/t/p/w500{poster_path}'
 
-    return poster_link
+    debug(f"Could not get poster for {imdb_id} from TMDB", source="tmdb")
+    return None
 
 
-def get_localized_title(shared_state, imdb_id, language='de',original_title=False):
-    localized_title = None
-    titre_original =None
-    headers = {
-        'Accept-Language': language,
-        'User-Agent': shared_state.values["user_agent"]
-    }
+def get_localized_title(shared_state, imdb_id, language='de', original_title=False):
+    locale = _LANG_TO_LOCALE.get(language, f'{language}-{language.upper()}')
+    result, media_type = _tmdb_find(imdb_id, language=locale)
 
-    info(f"IMDb request headers for {imdb_id}: {headers}", source="imdb")
-    try:
-        response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
-    except Exception as e:
-        info(f"Error loading IMDb metadata for {imdb_id}: {e}")
-        return localized_title, None
-    info(f"IMDb response status for {imdb_id}: {response.status_code}, body length: {len(response.text)}", source="imdb")
-    debug(f"IMDb response status for {imdb_id}: {response.status_code}")
-    if response.status_code >= 300:
-        info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
+    if not result:
+        info(f"Could not extract title from IMDb-ID {imdb_id}", source="tmdb")
         return None, None
-    soup = None
-    if original_title:
-        match = re.search(r">Titre original\s*:?(.+?)</div>", response.text, re.DOTALL)
-        if match:
-            titre_original = match.group(1).strip()
-        if not titre_original:
-            soup = BeautifulSoup(response.text, "html.parser")
-            aka_item = soup.find(
-                "li",
-                {"data-testid": "title-details-akas"},
-            )
-            if aka_item:
-                aka_text = aka_item.find(
-                    "span",
-                    class_="ipc-metadata-list-item__list-content-item",
-                )
-                if aka_text:
-                    titre_original = aka_text.get_text(strip=True)
-    title_tag = re.search(r'<title>(.*?)</title>', response.text)
-    if title_tag:
-        raw_title = html.unescape(title_tag.group(1))
-        debug(f"IMDb raw title tag for {imdb_id}: {raw_title!r}")
-        # IMDb formats: "Title (TV Series ...) - IMDb" or "Title | IMDb" or "Title - IMDb"
-        localized_title = re.split(r'\s*(?:\(|\||\s+-\s+IMDb)', raw_title)[0].strip() or None
-    else:
-        debug(f"IMDb: no <title> tag found for {imdb_id} (body length: {len(response.text)})")
 
-    if not localized_title:
-        debug(f"Could not get localized title for {imdb_id} in {language} from IMDb")
-    # info(localized_title)
-    # localized_title = html.unescape(localized_title)
-    # info(localized_title)
-    # localized_title = re.sub(r"[^a-zA-Z0-9äöüÄÖÜß&-']", ' ', localized_title).strip()
-    # info(localized_title)
-    # localized_title = localized_title.replace(" - ", "-")
-    # info(localized_title)
-    # localized_title = re.sub(r'\s{2,}', ' ', localized_title)
-    # info(localized_title)
-    debug(f"IMDb title for {imdb_id}: localized={localized_title!r} original={titre_original!r}")
+    if media_type == 'tv':
+        localized_title = result.get('name') or result.get('original_name')
+        orig = result.get('original_name')
+    else:
+        localized_title = result.get('title') or result.get('original_title')
+        orig = result.get('original_title')
+
+    titre_original = None
+    if original_title and orig and orig != localized_title:
+        titre_original = orig
+
+    info(f"TMDB title for {imdb_id}: localized={localized_title!r} original={titre_original!r}", source="tmdb")
     return localized_title, titre_original
 
-def get_type(shared_state, imdb_id, language='de'):
-    headers = {
-        'Accept-Language': language,
-        'User-Agent': shared_state.values["user_agent"]
-    }
 
-    info(f"IMDb request headers for {imdb_id}: {headers}", source="imdb")
-    try:
-        response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
-    except Exception as e:
-        info(f"Error loading IMDb metadata for {imdb_id}: {e}")
+def get_type(shared_state, imdb_id, language='fr'):
+    locale = _LANG_TO_LOCALE.get(language, f'{language}-{language.upper()}')
+    result, _ = _tmdb_find(imdb_id, language=locale)
+
+    if not result:
+        info(f"Could not extract genres from IMDb for {imdb_id}", source="tmdb")
         return []
-    info(f"IMDb response status for {imdb_id}: {response.status_code}, body length: {len(response.text)}", source="imdb")
-    if response.status_code >= 300:
-        info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
-        return []
-    soup = BeautifulSoup(response.text, "html.parser")
 
-    # 1) Chercher le bloc JSON-LD principal et parser `genre`
-    ld_tags = soup.find_all("script", type="application/ld+json")
-    info(f"IMDb JSON-LD tags found for {imdb_id}: {len(ld_tags)}", source="imdb")
-    genres = []
-    for tag in ld_tags:
-        try:
-            data = json.loads(tag.string or tag.text or "")
-        except Exception:
-            continue
+    genre_ids = result.get('genre_ids', [])
+    genres = [_TMDB_GENRES[gid] for gid in genre_ids if gid in _TMDB_GENRES]
 
-        # Plusieurs possibilités : dict seul, ou liste de dicts
-        candidates = data if isinstance(data, list) else [data]
-        for obj in candidates:
-            if not isinstance(obj, dict):
-                continue
-            typ = obj.get("@type", "")
-            debug(f"IMDb JSON-LD @type for {imdb_id}: {typ!r}")
-            # IMDb met souvent TVSeries/Movie ici
-            if ("TVSeries" in typ) or ("Movie" in typ) or ("TVEpisode" in typ):
-                g = obj.get("genre")
-                if not g:
-                    continue
-                if isinstance(g, str):
-                    genres.extend([x.strip() for x in g.split(",") if x.strip()])
-                elif isinstance(g, list):
-                    genres.extend([str(x).strip() for x in g if str(x).strip()])
+    info(f"TMDB genres for {imdb_id}: {genres}", source="tmdb")
+    return genres
 
-    # Dédup + ordre conservé
-    seen = set()
-    genres_unique = [g for g in genres if not (g in seen or seen.add(g))]
-    if genres_unique:
-        debug(f"IMDb genres for {imdb_id}: {genres_unique}")
-        return genres_unique
-
-    # 2) Fallback : essayer de lire depuis <meta property="og:title"> (ex: "... | Animation, Action, Aventure")
-    og_title = soup.find("meta", {"property": "og:title"})
-    if og_title and og_title.get("content"):
-        part = og_title["content"].split("|")[-1]  # " Animation, Action, Aventure"
-        alt = [x.strip() for x in part.split(",") if x.strip()]
-        if alt:
-            debug(f"IMDb genres for {imdb_id} (fallback): {alt}")
-            return alt
-
-    info(f"Could not extract genres from IMDb for {imdb_id}", source="imdb")
-    return []
 
 def get_clean_title(title):
     try:
@@ -167,7 +154,6 @@ def get_clean_title(title):
             r'(|.UNRATED.*|.Unrated.*|.Uncut.*|.UNCUT.*)(|.Directors.Cut.*|.Final.Cut.*|.DC.*|.REMASTERED.*|.EXTENDED.*|.Extended.*|.Theatrical.*|.THEATRICAL.*)',
             "", extracted_title)
         clean_title = leftover_tags_removed.replace(".", " ").strip().replace(" ", "+")
-
     except:
         clean_title = title
     return clean_title
@@ -200,18 +186,23 @@ def get_imdb_id_from_title(shared_state, title, language="de"):
                            headers=headers, timeout=10)
 
     if results.status_code == 200:
+        from bs4 import BeautifulSoup
+        from json import loads
         soup = BeautifulSoup(results.text, "html.parser")
         props = soup.find("script", text=re.compile("props"))
-        details = loads(props.string)
-        search_results = details['props']['pageProps']['titleResults']['results']
-
-        if len(search_results) > 0:
-            for result in search_results:
-                if shared_state.search_string_in_sanitized_title(title, f"{result['titleNameText']}"):
-                    imdb_id = result['id']
-                    break
+        if props:
+            try:
+                details = loads(props.string)
+                search_results = details['props']['pageProps']['titleResults']['results']
+                if len(search_results) > 0:
+                    for result in search_results:
+                        if shared_state.search_string_in_sanitized_title(title, f"{result['titleNameText']}"):
+                            imdb_id = result['id']
+                            break
+            except Exception as e:
+                debug(f"IMDb search parse error: {e}", source="tmdb")
     else:
-        debug(f"Request on IMDb failed: {results.status_code}")
+        debug(f"IMDb search request failed: {results.status_code}", source="tmdb")
 
     recently_searched[title] = {
         "imdb_id": imdb_id,
@@ -220,6 +211,6 @@ def get_imdb_id_from_title(shared_state, title, language="de"):
     shared_state.update(context, recently_searched)
 
     if not imdb_id:
-        debug(f"No IMDb-ID found for {title}")
+        debug(f"No IMDb-ID found for {title}", source="tmdb")
 
     return imdb_id
