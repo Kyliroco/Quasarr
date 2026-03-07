@@ -6,7 +6,7 @@ import json
 
 import quasarr.providers.html_images as images
 from quasarr.providers.html_templates import render_centered_html
-from quasarr.providers.log import get_log_entries, get_log_stats
+from quasarr.providers.log import get_log_entries, get_log_stats, set_debug_mode, is_debug_mode
 
 
 def setup_debug_routes(app):
@@ -40,6 +40,21 @@ def setup_debug_routes(app):
         response.content_type = 'application/json'
         return json.dumps(get_log_stats())
 
+    @app.get('/debug/api/debug-mode')
+    def api_debug_mode_get():
+        from bottle import response
+        response.content_type = 'application/json'
+        return json.dumps({"enabled": is_debug_mode()})
+
+    @app.post('/debug/api/debug-mode')
+    def api_debug_mode_set():
+        from bottle import request, response
+        response.content_type = 'application/json'
+        body = request.json or {}
+        enabled = bool(body.get("enabled", False))
+        set_debug_mode(enabled)
+        return json.dumps({"enabled": is_debug_mode()})
+
     # ------------------------------------------------------------------
     # HTML dashboard
     # ------------------------------------------------------------------
@@ -68,6 +83,7 @@ def setup_debug_routes(app):
                 <input id="searchFilter" type="text" placeholder="Search..." />
                 <button class="btn-primary small" onclick="fetchLogs()">Filter</button>
                 <button id="autoRefreshBtn" class="btn-secondary small" onclick="toggleAutoRefresh()">Auto-refresh: OFF</button>
+                <button id="debugModeBtn" class="btn-secondary small" onclick="toggleDebugMode()">Debug: OFF</button>
                 <button class="btn-secondary small" onclick="location.href='/'">Back</button>
             </div>
         </div>
@@ -362,7 +378,28 @@ def setup_debug_routes(app):
                 if (e.key === 'Enter') fetchLogs();
             }});
 
+            function updateDebugBtn(enabled) {{
+                const btn = document.getElementById('debugModeBtn');
+                btn.textContent = enabled ? 'Debug: ON' : 'Debug: OFF';
+                btn.className = enabled ? 'btn-primary small' : 'btn-secondary small';
+            }}
+
+            function toggleDebugMode() {{
+                fetch('/debug/api/debug-mode')
+                    .then(r => r.json())
+                    .then(data => {{
+                        return fetch('/debug/api/debug-mode', {{
+                            method: 'POST',
+                            headers: {{'Content-Type': 'application/json'}},
+                            body: JSON.stringify({{enabled: !data.enabled}})
+                        }});
+                    }})
+                    .then(r => r.json())
+                    .then(data => updateDebugBtn(data.enabled));
+            }}
+
             // Initial load
+            fetch('/debug/api/debug-mode').then(r => r.json()).then(d => updateDebugBtn(d.enabled));
             fetchLogs();
         </script>
         """

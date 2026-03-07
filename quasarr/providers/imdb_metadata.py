@@ -44,11 +44,13 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
         'User-Agent': shared_state.values["user_agent"]
     }
 
+    info(f"IMDb request headers for {imdb_id}: {headers}", source="imdb")
     try:
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return localized_title, None
+    info(f"IMDb response status for {imdb_id}: {response.status_code}, body length: {len(response.text)}", source="imdb")
     debug(f"IMDb response status for {imdb_id}: {response.status_code}")
     if response.status_code >= 300:
         info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
@@ -100,12 +102,13 @@ def get_type(shared_state, imdb_id, language='de'):
         'User-Agent': shared_state.values["user_agent"]
     }
 
+    info(f"IMDb request headers for {imdb_id}: {headers}", source="imdb")
     try:
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return []
-    debug(f"IMDb response status for {imdb_id}: {response.status_code}")
+    info(f"IMDb response status for {imdb_id}: {response.status_code}, body length: {len(response.text)}", source="imdb")
     if response.status_code >= 300:
         info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
         return []
@@ -113,7 +116,7 @@ def get_type(shared_state, imdb_id, language='de'):
 
     # 1) Chercher le bloc JSON-LD principal et parser `genre`
     ld_tags = soup.find_all("script", type="application/ld+json")
-    debug(f"IMDb JSON-LD tags found for {imdb_id}: {len(ld_tags)}, body length: {len(response.text)}")
+    info(f"IMDb JSON-LD tags found for {imdb_id}: {len(ld_tags)}", source="imdb")
     genres = []
     for tag in ld_tags:
         try:

@@ -19,6 +19,17 @@ _buffer_lock = threading.Lock()
 _log_buffer: deque = deque(maxlen=_MAX_ENTRIES)
 _event_id_counter = 0
 
+_debug_mode: bool = bool(os.getenv("DEBUG"))
+
+
+def set_debug_mode(enabled: bool):
+    global _debug_mode
+    _debug_mode = enabled
+
+
+def is_debug_mode() -> bool:
+    return _debug_mode
+
 
 def _next_id():
     global _event_id_counter
@@ -83,7 +94,7 @@ def info(message: str, source: str = "", **extra):
 
 
 def debug(message: str, source: str = "", **extra):
-    if os.getenv("DEBUG"):
+    if _debug_mode:
         _emit("DEBUG", message, source=source, **extra)
 
 
@@ -127,7 +138,7 @@ def log_event(event_type: str, source: str = "", level: str = "DEBUG", **data):
             msg_parts.append(f"{key}={value}")
     message = " | ".join(msg_parts)
 
-    if level == "DEBUG" and not os.getenv("DEBUG"):
+    if level == "DEBUG" and not _debug_mode:
         # Still store in buffer even without DEBUG so the dashboard can show it
         ts = _now_iso()
         entry = {
