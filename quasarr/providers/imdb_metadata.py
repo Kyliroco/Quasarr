@@ -48,7 +48,11 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
-        return localized_title
+        return localized_title, None
+    debug(f"IMDb response status for {imdb_id}: {response.status_code}")
+    if response.status_code != 200:
+        info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
+        return None, None
     soup = None
     if original_title:
         match = re.search(r">Titre original\s*:?(.+?)</div>", response.text, re.DOTALL)
@@ -88,8 +92,8 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
     # info(localized_title)
     # localized_title = re.sub(r'\s{2,}', ' ', localized_title)
     # info(localized_title)
-    print(f"title: {localized_title} original : {titre_original}")
-    return localized_title ,titre_original
+    debug(f"IMDb title for {imdb_id}: localized={localized_title!r} original={titre_original!r}")
+    return localized_title, titre_original
 
 def get_type(shared_state, imdb_id, language='de'):
     headers = {
@@ -102,7 +106,10 @@ def get_type(shared_state, imdb_id, language='de'):
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return []
-    # print(response.text)
+    debug(f"IMDb response status for {imdb_id}: {response.status_code}")
+    if response.status_code != 200:
+        info(f"IMDb returned HTTP {response.status_code} for {imdb_id}")
+        return []
     soup = BeautifulSoup(response.text, "html.parser")
 
     # 1) Chercher le bloc JSON-LD principal et parser `genre`
