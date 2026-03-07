@@ -71,15 +71,14 @@ def get_localized_title(shared_state, imdb_id, language='de',original_title=Fals
                 )
                 if aka_text:
                     titre_original = aka_text.get_text(strip=True)
-    try:
-        match = re.findall(r'<title>(.*?) \(.*?</title>', response.text)
-        localized_title = match[0]
-    except:
-        try:
-            match = re.findall(r'<title>(.*?) - IMDb</title>', response.text)
-            localized_title = match[0]
-        except:
-            pass
+    title_tag = re.search(r'<title>(.*?)</title>', response.text)
+    if title_tag:
+        raw_title = html.unescape(title_tag.group(1))
+        debug(f"IMDb raw title tag for {imdb_id}: {raw_title!r}")
+        # IMDb formats: "Title (TV Series ...) - IMDb" or "Title | IMDb" or "Title - IMDb"
+        localized_title = re.split(r'\s*(?:\(|\||\s+-\s+IMDb)', raw_title)[0].strip() or None
+    else:
+        debug(f"IMDb: no <title> tag found for {imdb_id} (body length: {len(response.text)})")
 
     if not localized_title:
         debug(f"Could not get localized title for {imdb_id} in {language} from IMDb")
@@ -113,8 +112,10 @@ def get_type(shared_state, imdb_id, language='de'):
     soup = BeautifulSoup(response.text, "html.parser")
 
     # 1) Chercher le bloc JSON-LD principal et parser `genre`
+    ld_tags = soup.find_all("script", type="application/ld+json")
+    debug(f"IMDb JSON-LD tags found for {imdb_id}: {len(ld_tags)}, body length: {len(response.text)}")
     genres = []
-    for tag in soup.find_all("script", type="application/ld+json"):
+    for tag in ld_tags:
         try:
             data = json.loads(tag.string or tag.text or "")
         except Exception:
@@ -126,6 +127,7 @@ def get_type(shared_state, imdb_id, language='de'):
             if not isinstance(obj, dict):
                 continue
             typ = obj.get("@type", "")
+            debug(f"IMDb JSON-LD @type for {imdb_id}: {typ!r}")
             # IMDb met souvent TVSeries/Movie ici
             if ("TVSeries" in typ) or ("Movie" in typ) or ("TVEpisode" in typ):
                 g = obj.get("genre")
