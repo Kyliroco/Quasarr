@@ -103,7 +103,7 @@ def get_type(shared_state, imdb_id, language='de'):
 
     try:
         response = requests.get(f"https://www.imdb.com/title/{imdb_id}/", headers=headers, timeout=10)
-        info(response)
+        info(response.text)
     except Exception as e:
         info(f"Error loading IMDb metadata for {imdb_id}: {e}")
         return []
