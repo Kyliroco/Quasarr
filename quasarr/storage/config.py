@@ -39,6 +39,9 @@ class Config(object):
             ("wd", "secret", ""),
             ("zt", "secret", "")
         ],
+        'TMDB': [
+            ("token", "secret", ""),
+        ],
         'FlareSolverr': [
             ("url", "str", ""),
         ],

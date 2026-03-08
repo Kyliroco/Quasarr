@@ -149,6 +149,14 @@ def run():
         if not api_key:
             api_key = shared_state.generate_api_key()
 
+        tmdb_token_env = os.environ.get('TMDB_TOKEN', '')
+        if tmdb_token_env:
+            Config('TMDB').save('token', tmdb_token_env)
+            print("TMDB token loaded from TMDB_TOKEN environment variable.")
+        elif not Config('TMDB').get('token'):
+            print("Warning: TMDB_TOKEN environment variable not set and no token in config. "
+                  "Metadata lookups will fail.")
+
         hostnames = get_clean_hostnames(shared_state)
         if not hostnames:
             hostnames_config(shared_state)
