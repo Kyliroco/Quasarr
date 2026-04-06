@@ -1,0 +1,21 @@
+{
+  "name": "demo_breakingbad_s1e3",
+  "search_url": "https://www.zone-telechargement.test/?p=series&search=breaking+bad",
+  "request_from": "Sonarr",
+  "search_string": "Breaking Bad",
+  "season": 1,
+  "episode": 3,
+  "mirror": null,
+  "search_pages": [
+    "search_p1.html"
+  ],
+  "detail_pages": {
+    "id=78001": {
+      "fixture": "detail_78001.html",
+      "expected_dl_protect_urls": [
+        "https://dl-protect.test/bb-s1e3-1f?rl=a2",
+        "https://dl-protect.test/bb-s1e3-rg?rl=a2"
+      ]
+    }
+  }
+}
