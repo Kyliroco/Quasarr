@@ -60,7 +60,7 @@ def send_discord_message(shared_state, title, case, imdb_id=None, details=None, 
         fields = [
             {
                 'name': 'Solve CAPTCHA',
-                'value': f'Open [this link]({f"{shared_state.values['external_address']}/captcha"}) to solve the CAPTCHA.',
+                'value': f"Open [this link]({shared_state.values['external_address']}/captcha) to solve the CAPTCHA.",
             }
         ]
         if not shared_state.values.get("helper_active"):

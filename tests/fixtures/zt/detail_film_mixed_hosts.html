@@ -1,0 +1,40 @@
+<!-- ZT detail page with mixed hosts + streaming links to test filtering -->
+<div class="centersideinn">
+    <h1>Le Film Test</h1>
+</div>
+
+<font color="red">Le.Film.Test.2023.FRENCH.720p</font>
+
+<div>Qualité : 720p | VF</div>
+<div>Taille du fichier : 900 Mo</div>
+<div>Année de production : 2023</div>
+
+<div class="postinfo">
+    <!-- Supported host with download link -->
+    <b><div>1Fichier</div></b>
+    <b><a href="https://dl-protect.test/mix-1f?rl=a2">Télécharger</a></b><br><br>
+
+    <!-- Streaming link that should be filtered (rl=a1) -->
+    <b><div>1Fichier</div></b>
+    <b><a href="https://dl-protect.test/mix-1f-stream?rl=a1">Streaming</a></b><br><br>
+
+    <!-- Unsupported host (nitroflare) - should be skipped -->
+    <b><div>Nitroflare</div></b>
+    <b><a href="https://dl-protect.test/mix-nf?rl=a2">Télécharger</a></b><br><br>
+
+    <!-- Unsupported host (uptobox) - should be skipped -->
+    <b><div>Uptobox</div></b>
+    <b><a href="https://dl-protect.test/mix-upto?rl=a2">Télécharger</a></b><br><br>
+
+    <!-- Supported host -->
+    <b><div>Turbobit</div></b>
+    <b><a href="https://dl-protect.test/mix-tb?rl=a2">Télécharger</a></b><br><br>
+
+    <!-- Streaming link with h1 token - should be filtered -->
+    <b><div>Rapidgator</div></b>
+    <b><a href="https://dl-protect.test/mix-rg-h1?rl=h1">Streaming HD</a></b><br><br>
+
+    <!-- Supported host with download link -->
+    <b><div>Rapidgator</div></b>
+    <b><a href="https://dl-protect.test/mix-rg?rl=a2">Télécharger</a></b><br><br>
+</div>

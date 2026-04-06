@@ -50,7 +50,7 @@ def handle_protected(shared_state, title, password, package_id, imdb_id, url,
                      mirror=None, size_mb=None, func=None, label=""):
     links = func(shared_state, url, mirror, title)
     if links:
-        info(f'CAPTCHA-Solution required for "{title}" at: "{shared_state.values['external_address']}/captcha"')
+        info(f"CAPTCHA-Solution required for \"{title}\" at: \"{shared_state.values['external_address']}/captcha\"")
         send_discord_message(shared_state, title=title, case="captcha", imdb_id=imdb_id, source=url)
         blob = json.dumps({"title": title, "links": links, "size_mb": size_mb, "password": password})
         shared_state.values["database"]("protected").update_store(package_id, blob)
