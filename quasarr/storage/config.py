@@ -27,6 +27,7 @@ class Config(object):
         ],
         'Hostnames': [
             ("al", "secret", ""),
+            ("am", "secret", ""),
             ("by", "secret", ""),
             ("dd", "secret", ""),
             ("dt", "secret", ""),
@@ -41,6 +42,9 @@ class Config(object):
         ],
         'TMDB': [
             ("token", "secret", "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI1NThlZDdkOGJhNDE1ZTUxYTBkMDM2YzE5M2I5Yjc3ZCIsIm5iZiI6MTc1NTAwMzcwMS41MTYsInN1YiI6IjY4OWIzYjM1MmJjNzlkOWMxMjhkYjBiYyIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.iz44UX0ct4FKeTAdq3-CFUNbNM2AUAZrPh7_CD1eUtY"),
+        ],
+        'YTDLP': [
+            ("output_dir", "str", ""),
         ],
         'FlareSolverr': [
             ("url", "str", ""),

@@ -16,6 +16,7 @@ Requires-Dist: pillow>=11.3.0
 Requires-Dist: pycryptodomex>=3.23.0
 Requires-Dist: requests>=2.32.4
 Requires-Dist: dateparser
+Requires-Dist: yt-dlp>=2024.8.6
 Dynamic: license-file
 
 #   

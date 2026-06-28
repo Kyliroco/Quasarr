@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from quasarr.providers.log import info, debug, error
 from quasarr.search.sources.al import al_feed, al_search
+from quasarr.search.sources.am import am_feed, am_search
 from quasarr.search.sources.by import by_feed, by_search
 from quasarr.search.sources.dd import dd_search, dd_feed
 from quasarr.search.sources.dt import dt_feed, dt_search
@@ -30,6 +31,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
     docs_search = "lazylibrarian" in request_from.lower()
 
     al = shared_state.values["config"]("Hostnames").get("al")
+    am = shared_state.values["config"]("Hostnames").get("am")
     by = shared_state.values["config"]("Hostnames").get("by")
     dd = shared_state.values["config"]("Hostnames").get("dd")
     dt = shared_state.values["config"]("Hostnames").get("dt")
@@ -49,6 +51,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
     # Radarr/Sonarr use imdb_id for searches
     imdb_map = [
         (al, al_search),
+        (am, am_search),
         (by, by_search),
         (dd, dd_search),
         (dt, dt_search),
@@ -74,6 +77,7 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
     # Feed searches omit imdb_id and search_phrase
     feed_map = [
         (al, al_feed),
+        (am, am_feed),
         (by, by_feed),
         (dd, dd_feed),
         (dt, dt_feed),

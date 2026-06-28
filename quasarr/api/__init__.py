@@ -17,6 +17,7 @@ from quasarr.providers.web_server import Server
 from quasarr.storage.config import Config
 
 from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
+from quasarr.downloads.ytdlp_worker import YtdlpWorker
 
 def get_api(shared_state_dict, shared_state_lock):
     shared_state.set_state(shared_state_dict, shared_state_lock)
@@ -24,6 +25,8 @@ def get_api(shared_state_dict, shared_state_lock):
     app = Bottle()
     snapshotter = PackageSnapshotter(shared_state, interval=30).start()
     app.config['snapshotter'] = snapshotter
+    ytdlp_worker = YtdlpWorker(shared_state).start()
+    app.config['ytdlp_worker'] = ytdlp_worker
     setup_arr_routes(app)
     setup_captcha_routes(app)
     setup_config(app, shared_state)
@@ -107,6 +110,7 @@ def get_api(shared_state_dict, shared_state_lock):
         <div class="section">
             <h2>🔧 Quick Actions</h2>
             <p><button class="btn-primary" onclick="location.href='/hostnames'">Update Hostnames</button></p>
+            <p><button class="btn-primary" onclick="location.href='/ytdlp'">yt-dlp Download Folder</button></p>
             <p><button class="btn-primary" onclick="location.href='/statistics'">View Statistics</button></p>
             <p><button class="btn-primary" onclick="location.href='/debug/'">Debug Dashboard</button></p>
         </div>

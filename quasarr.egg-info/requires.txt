@@ -5,3 +5,4 @@ pillow>=11.3.0
 pycryptodomex>=3.23.0
 requests>=2.32.4
 dateparser
+yt-dlp>=2024.8.6

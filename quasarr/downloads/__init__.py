@@ -9,6 +9,7 @@ import json
 
 from quasarr.downloads.linkcrypters.hide import decrypt_links_if_hide
 from quasarr.downloads.sources.al import get_al_download_links
+from quasarr.downloads.sources.am import get_am_download_links
 from quasarr.downloads.sources.by import get_by_download_links
 from quasarr.downloads.sources.dd import get_dd_download_links
 from quasarr.downloads.sources.dt import get_dt_download_links
@@ -19,6 +20,7 @@ from quasarr.downloads.sources.sf import get_sf_download_links, resolve_sf_redir
 from quasarr.downloads.sources.sl import get_sl_download_links
 from quasarr.downloads.sources.wd import get_wd_download_links
 from quasarr.downloads.sources.zt import get_zt_download_links
+from quasarr.downloads.ytdlp_worker import enqueue_job
 from quasarr.providers.log import info , debug
 from quasarr.providers.notifications import send_discord_message
 from quasarr.providers.statistics import StatsHelper
@@ -138,6 +140,20 @@ def handle_wd(shared_state, title, password, package_id, imdb_id, url, mirror, s
         label='WD'
     )
 
+def handle_am(shared_state, title, password, package_id, imdb_id, url, mirror, size_mb):
+    # anime-sama : pas de JDownloader. On résout les embeds jouables puis on
+    # enfile un job yt-dlp (le worker télécharge en arrière-plan).
+    candidates = get_am_download_links(shared_state, url, mirror, title)
+    if not candidates:
+        fail(title, package_id, shared_state,
+             reason=f'No playable anime-sama embed for "{title}" - "{url}"')
+        return {"success": False, "title": title}
+
+    enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb)
+    send_discord_message(shared_state, title=title, case="unprotected", imdb_id=imdb_id, source=url)
+    return {"success": True, "title": title}
+
+
 def download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id=None):
     if "lazylibrarian" in request_from.lower():
         category = "docs"
@@ -153,6 +169,7 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
     config = shared_state.values["config"]("Hostnames")
     flags = {
         'AL': config.get("al"),
+        'AM': config.get("am"),
         'BY': config.get("by"),
         'DD': config.get("dd"),
         'DT': config.get("dt"),
@@ -167,6 +184,7 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
 
     handlers = [
         (flags['AL'], handle_al),
+        (flags['AM'], handle_am),
         (flags['BY'], lambda *a: handle_protected(*a, func=get_by_download_links, label='BY')),
         (flags['DD'], lambda *a: handle_unprotected(*a, func=get_dd_download_links, label='DD')),
         (flags['DT'], lambda *a: handle_unprotected(*a, func=get_dt_download_links, label='DT')),

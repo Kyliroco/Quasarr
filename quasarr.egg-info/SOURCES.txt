@@ -16,6 +16,7 @@ quasarr/api/config/__init__.py
 quasarr/api/sponsors_helper/__init__.py
 quasarr/api/statistics/__init__.py
 quasarr/downloads/__init__.py
+quasarr/downloads/ytdlp_worker.py
 quasarr/downloads/linkcrypters/__init__.py
 quasarr/downloads/linkcrypters/al.py
 quasarr/downloads/linkcrypters/filecrypt.py
@@ -24,6 +25,7 @@ quasarr/downloads/packages/__init__.py
 quasarr/downloads/packages/package_snapshot.py
 quasarr/downloads/sources/__init__.py
 quasarr/downloads/sources/al.py
+quasarr/downloads/sources/am.py
 quasarr/downloads/sources/by.py
 quasarr/downloads/sources/dd.py
 quasarr/downloads/sources/dt.py
@@ -53,6 +55,7 @@ quasarr/providers/sessions/nx.py
 quasarr/search/__init__.py
 quasarr/search/sources/__init__.py
 quasarr/search/sources/al.py
+quasarr/search/sources/am.py
 quasarr/search/sources/by.py
 quasarr/search/sources/dd.py
 quasarr/search/sources/dt.py
@@ -75,3 +78,4 @@ tests/conftest.py
 tests/test_zt_helpers.py
 tests/test_zt_parsing.py
 tests/test_zt_regression_cases.py
+tests/zt_test_ui.py
