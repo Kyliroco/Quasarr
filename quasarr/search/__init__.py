@@ -6,6 +6,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from quasarr.providers.imdb_metadata import is_anime
 from quasarr.providers.log import info, debug, error
 from quasarr.search.sources.al import al_feed, al_search
 from quasarr.search.sources.am import am_feed, am_search
@@ -91,14 +92,25 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
         (zt, zt_feed),
     ]
 
+    # anime-sama (am) ne sert que pour les animes ; pour un anime on le préfère à
+    # zt (zt n'est alors qu'un secours, lancé après si anime-sama ne renvoie rien).
+    anime = False
+    if imdb_id and am:
+        anime = is_anime(shared_state, imdb_id)
+
     if imdb_id:  # only Radarr/Sonarr are using imdb_id
         args, kwargs = (
             (shared_state, start_time, request_from, imdb_id),
             {'mirror': mirror, 'season': season, 'episode': episode}
         )
         for flag, func in imdb_map:
-            if flag:
-                functions.append(lambda f=func, a=args, kw=kwargs: f(*a, **kw))
+            if not flag:
+                continue
+            if func is am_search and not anime:
+                continue  # anime-sama : animes uniquement
+            if func is zt_search and anime:
+                continue  # anime : zt seulement en secours (géré après le run)
+            functions.append(lambda f=func, a=args, kw=kwargs: f(*a, **kw))
 
     elif search_phrase and docs_search:  # only LazyLibrarian is allowed to use search_phrase
         args, kwargs = (
@@ -141,6 +153,20 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
                 tb = traceback.extract_tb(e.__traceback__)
                 location = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "unknown location"
                 error(f"An error occurred at {location}: {e}", source="search")
+
+    # Secours zt : si c'est un anime et qu'anime-sama n'a renvoyé aucun résultat,
+    # on retombe sur zt (qui n'a pas été lancé dans le run parallèle ci-dessus).
+    if imdb_id and anime and zt:
+        am_found = any(r.get("details", {}).get("hostname") == "am" for r in results)
+        if not am_found:
+            debug("anime-sama returned no results — falling back to zt", source="search")
+            try:
+                results.extend(zt_search(
+                    shared_state, start_time, request_from, imdb_id,
+                    mirror=mirror, season=season, episode=episode,
+                ))
+            except Exception as e:
+                error(f"zt fallback failed: {e}", source="search")
 
     elapsed_time = time.time() - start_time
     info(f"Providing {len(results)} releases to {request_from} for {stype}. Time taken: {elapsed_time:.2f} seconds")

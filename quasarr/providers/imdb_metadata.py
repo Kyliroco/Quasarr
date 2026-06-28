@@ -59,8 +59,19 @@ def _tmdb_token():
     return Config('TMDB').get('token') or ''
 
 
+# Cache process-local des résolutions TMDB /find (les métadonnées sont stables).
+# Évite de refaire le même /find pour fr, en, romaji, is_anime, get_type... lors
+# d'une même recherche. On ne met en cache que les succès (pas les échecs réseau).
+_FIND_CACHE = {}
+
+
 def _tmdb_find(imdb_id, language='fr-FR'):
     """Call TMDB /find/{imdb_id} and return (result_dict, media_type) or (None, None)."""
+    cache_key = (imdb_id, language)
+    cached = _FIND_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     token = _tmdb_token()
     if not token:
         info("TMDB token not configured — set it in config", source="tmdb")
@@ -87,10 +98,14 @@ def _tmdb_find(imdb_id, language='fr-FR'):
 
     if tv:
         debug(f"TMDB: tv result for {imdb_id}: {tv[0]}", source="tmdb")
-        return tv[0], 'tv'
+        result = (tv[0], 'tv')
+        _FIND_CACHE[cache_key] = result
+        return result
     if movies:
         debug(f"TMDB: movie result for {imdb_id}: {movies[0]}", source="tmdb")
-        return movies[0], 'movie'
+        result = (movies[0], 'movie')
+        _FIND_CACHE[cache_key] = result
+        return result
 
     info(f"TMDB: no results found for {imdb_id}", source="tmdb")
     return None, None
@@ -182,6 +197,68 @@ def get_type(shared_state, imdb_id, language='fr'):
 
     info(f"TMDB genres for {imdb_id}: {genres}", source="tmdb")
     return genres
+
+
+def is_anime(shared_state, imdb_id):
+    """True si TMDB classe le titre comme animation d'origine japonaise.
+
+    Sert à router la recherche : un anime passe par anime-sama, un dessin animé
+    occidental (Pixar, etc.) ou tout autre contenu reste sur zt.
+    """
+    result, _media_type = _tmdb_find(imdb_id)
+    if not result:
+        return False
+
+    if 16 not in result.get('genre_ids', []):  # 16 = Animation
+        return False
+
+    original_language = (result.get('original_language') or '').lower()
+    origin_country = result.get('origin_country') or []
+    is_jp = original_language == 'ja' or 'JP' in origin_country
+
+    debug(f"is_anime({imdb_id}) -> {is_jp} "
+          f"(lang={original_language!r}, country={origin_country})", source="tmdb")
+    return is_jp
+
+
+def get_season_episode_counts(shared_state, imdb_id):
+    """{numero_saison: nb_episodes} depuis TMDB /tv/{id} (saison 0 ignorée).
+
+    Sert à convertir une numérotation saisonnière (S2E5) en numéro absolu
+    quand anime-sama range tout dans un seul dossier. {} si indisponible.
+    """
+    result, media_type = _tmdb_find(imdb_id)
+    if not result or media_type != 'tv':
+        return {}
+    tmdb_id = result.get('id')
+    token = _tmdb_token()
+    if not tmdb_id or not token:
+        return {}
+
+    cache_key = ('seasons', tmdb_id)
+    cached = _FIND_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    url = f'https://api.themoviedb.org/3/tv/{tmdb_id}'
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
+        debug(f"TMDB /tv details failed for {imdb_id}: {e}", source="tmdb")
+        return {}
+    if r.status_code != 200:
+        return {}
+
+    counts = {}
+    for season in r.json().get('seasons', []):
+        num = season.get('season_number')
+        cnt = season.get('episode_count')
+        if isinstance(num, int) and isinstance(cnt, int) and num >= 1:  # ignore les specials (saison 0)
+            counts[num] = cnt
+    _FIND_CACHE[cache_key] = counts
+    debug(f"TMDB season counts for {imdb_id}: {counts}", source="tmdb")
+    return counts
 
 
 def get_clean_title(title):
