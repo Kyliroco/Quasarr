@@ -92,10 +92,23 @@ def setup_config(app, shared_state):
             as new players are discovered. "Avg speed" is the mean yt-dlp download
             speed measured for that player (number of samples in parentheses).</p>
             <form action="/api/players" method="post">
-              <table style="margin:0 auto; border-collapse:collapse;">
-                <tr><th>On</th><th>Player</th><th>First seen</th><th>Date</th><th>Avg speed</th></tr>
-                {rows}
-              </table>
+              <div style="overflow-x:auto;">
+                <table class="players-table">
+                  <tr><th>On</th><th>Player</th><th>First seen</th><th>Date</th><th>Avg speed</th></tr>
+                  {rows}
+                </table>
+              </div>
+              <style>
+                .players-table {{
+                  margin: 0 auto;
+                  border-collapse: collapse;
+                }}
+                .players-table th,
+                .players-table td {{
+                  padding: 0.35rem 1rem;
+                  white-space: nowrap;
+                }}
+              </style>
               <br>{render_button("Save", "primary", {"type": "submit"})}
             </form>'''
         back = f'''<p>{render_button("Back", "secondary", {"onclick": "location.href='/'"})}</p>'''
