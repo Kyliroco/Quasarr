@@ -35,6 +35,7 @@ from quasarr.providers.tvdb_metadata import (
     get_absolute_number as tvdb_absolute_number,
     get_season_absolute_numbers as tvdb_season_absolute_numbers,
 )
+from quasarr.providers.players import register_player, is_player_enabled
 from quasarr.providers.log import info, debug, error, log_event
 
 hostname = "am"
@@ -101,6 +102,20 @@ def _host_of(url):
     except Exception:
         return ""
     return host[4:] if host.startswith("www.") else host
+
+
+def _host_tag(url):
+    """Nom lisible de l'hébergeur (lecteur) pour distinguer les releases dans
+    Sonarr : sendvid.com → 'Sendvid', video.sibnet.ru → 'Sibnet'."""
+    host = re.sub(r"[^A-Za-z0-9.]", "", _host_of(url))
+    parts = [p for p in host.split(".") if p]
+    if len(parts) >= 2:
+        label = parts[-2]  # second-level domain (avant le TLD)
+    elif parts:
+        label = parts[0]
+    else:
+        label = "player"
+    return label.capitalize() or "Player"
 
 
 def _update_hostname(shared_state, current_host, final_url):
@@ -468,21 +483,26 @@ def am_search(shared_state, start_time, request_from, search_string,
     seen_titles = set()  # évite les doublons quand deux variantes donnent le même titre
 
     if is_movie:
-        # Radarr : un seul fichier. On prend le premier film disponible.
+        # Radarr : un seul fichier, mais on propose chaque lecteur disponible.
         candidates = _candidates_for_index(eps_map, 0)
         if not candidates:
             debug(f"{hostname.upper()} no playable film embed for {slug}")
             return releases
-        source = f"{base_source}#episode=1"
-        for name in names:
-            dotted = _dotted_title(name)
-            if not dotted:
+        for embed_url in candidates:
+            host_tag = _host_tag(embed_url)
+            register_player(shared_state, host_tag, slug, 0, 0)  # 0/0 = film
+            if not is_player_enabled(shared_state, host_tag):
                 continue
-            title = f"{dotted}.{release_suffix}"
-            if title in seen_titles:
-                continue
-            seen_titles.add(title)
-            releases.append(_build_release(shared_state, title, source, FILM_SIZE_MB, imdb_id))
+            source = f"{base_source}#episode=1&player={host_tag}"
+            for name in names:
+                dotted = _dotted_title(name)
+                if not dotted:
+                    continue
+                title = f"{dotted}.{release_suffix}.{host_tag}"
+                if title in seen_titles:
+                    continue
+                seen_titles.add(title)
+                releases.append(_build_release(shared_state, title, source, FILM_SIZE_MB, imdb_id))
     else:
         # Sonarr : un épisode précis, ou toute la saison si aucun épisode demandé.
         season_for_tag = season_num if season_num is not None else 1
@@ -516,17 +536,23 @@ def am_search(shared_state, start_time, request_from, search_string,
             candidates = _candidates_for_index(eps_map, anime_ep - 1)
             if not candidates:
                 continue
-            source = f"{base_source}#episode={anime_ep}"
             tag = f"S{season_for_tag:02d}E{ep:02d}"
-            for name in names:
-                dotted = _dotted_title(name)
-                if not dotted:
+            # Une release par lecteur disponible (Sonarr peut les essayer chacun).
+            for embed_url in candidates:
+                host_tag = _host_tag(embed_url)
+                register_player(shared_state, host_tag, slug, season_for_tag, ep)
+                if not is_player_enabled(shared_state, host_tag):
                     continue
-                title = f"{dotted}.{tag}.{release_suffix}"
-                if title in seen_titles:
-                    continue
-                seen_titles.add(title)
-                releases.append(_build_release(shared_state, title, source, EPISODE_SIZE_MB, imdb_id))
+                source = f"{base_source}#episode={anime_ep}&player={host_tag}"
+                for name in names:
+                    dotted = _dotted_title(name)
+                    if not dotted:
+                        continue
+                    title = f"{dotted}.{tag}.{release_suffix}.{host_tag}"
+                    if title in seen_titles:
+                        continue
+                    seen_titles.add(title)
+                    releases.append(_build_release(shared_state, title, source, EPISODE_SIZE_MB, imdb_id))
 
     log_event("search_complete", source="am", level="INFO",
               query=imdb_id, results_count=len(releases),

@@ -17,9 +17,11 @@ from urllib.parse import urlparse
 import requests
 
 from quasarr.providers.log import debug, log_event
+from quasarr.providers.players import is_player_enabled
 from quasarr.search.sources.am import (
     AM_BLOCKED_HOSTS,
     _candidates_for_index,
+    _host_tag,
     _parse_episodes_js,
     _update_hostname,
     _user_agent,
@@ -29,27 +31,49 @@ hostname = "am"
 
 
 def _parse_source_url(url):
-    """Extrait (slug, season_path, episode) depuis l'URL de release anime-sama."""
+    """Extrait (slug, season_path, episode, player) depuis l'URL de release.
+
+    ``player`` est l'index du lecteur choisi (chaque lecteur = une release dans
+    Sonarr) ; None si non précisé (rétrocompat → tous les lecteurs).
+    """
     parsed = urlparse(url)
     episode = 1
+    player = None
     if parsed.fragment:
         for fragment in parsed.fragment.split("&"):
             key, _, value = fragment.partition("=")
             if key == "episode" and value.isdigit():
                 episode = int(value)
-                break
+            elif key == "player" and value:
+                player = value  # nom du lecteur (ex. "Vidmoly") ; index numérique toléré
 
     parts = [p for p in parsed.path.split("/") if p]
     # .../catalogue/<slug>/<saison>/<langue>
     if "catalogue" not in parts:
-        return None, None, episode
+        return None, None, episode, player
     idx = parts.index("catalogue")
     rest = parts[idx + 1:]
     if len(rest) < 3:
-        return None, None, episode
+        return None, None, episode, player
     slug = rest[0]
     season_path = "/".join(rest[1:3])  # "<saison>/<langue>"
-    return slug, season_path, episode
+    return slug, season_path, episode, player
+
+
+def _select_candidate(candidates, player):
+    """Sélectionne l'embed correspondant au lecteur demandé.
+
+    `player` est un nom d'hébergeur (ex. "Vidmoly", insensible à la casse) ;
+    un index numérique est toléré pour les anciens liens (rétrocompat).
+    """
+    if str(player).isdigit():
+        idx = int(player)
+        return candidates[idx] if 0 <= idx < len(candidates) else None
+    target = str(player).strip().lower()
+    for candidate in candidates:
+        if _host_tag(candidate).lower() == target:
+            return candidate
+    return None
 
 
 def get_am_download_links(shared_state, url, mirror, title):
@@ -59,9 +83,9 @@ def get_am_download_links(shared_state, url, mirror, title):
     if parsed.netloc:
         am = am or parsed.netloc
 
-    slug, season_path, episode = _parse_source_url(url)
+    slug, season_path, episode, player = _parse_source_url(url)
     log_event("download_attempt", source="am-dl",
-              title=title, episode=episode, slug=slug, url=url)
+              title=title, episode=episode, player=player, slug=slug, url=url)
 
     if not slug or not season_path:
         log_event("download_error", source="am-dl", level="ERROR",
@@ -89,6 +113,25 @@ def get_am_download_links(shared_state, url, mirror, title):
                   episode=episode, url=episodes_url)
         return []
 
+    # Une release = un lecteur précis (par NOM d'hébergeur) : on ne renvoie que
+    # celui demandé. S'il échoue, Sonarr essaiera la release du lecteur suivant.
+    if player is not None:
+        if not str(player).isdigit() and not is_player_enabled(shared_state, str(player)):
+            log_event("download_skipped", source="am-dl", level="WARNING",
+                      title=title, reason="player disabled by user", player=player)
+            return []
+        chosen = _select_candidate(candidates, player)
+        if chosen:
+            log_event("download_resolved", source="am-dl", level="INFO",
+                      title=title, episode=episode, player=player,
+                      host=urlparse(chosen).netloc)
+            return [chosen]
+        log_event("download_skipped", source="am-dl", level="WARNING",
+                  title=title, reason="requested player not available",
+                  player=player, available=len(candidates), url=episodes_url)
+        return []
+
+    # Rétrocompat : pas de lecteur précisé → tous les candidats (fallback auto).
     log_event("download_resolved", source="am-dl", level="INFO",
               title=title, episode=episode, candidates=len(candidates),
               first_host=urlparse(candidates[0]).netloc)

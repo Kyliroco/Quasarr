@@ -87,9 +87,13 @@ def _format_eta(seconds):
 
 
 class YtdlpWorker:
-    def __init__(self, shared_state, poll_interval=3):
+    def __init__(self, shared_state, poll_interval=3, inter_job_delay=5):
         self.shared_state = shared_state
         self.poll_interval = max(1, int(poll_interval))
+        # Délai entre deux téléchargements : on télécharge STRICTEMENT 1 par 1
+        # (un seul thread, _run_job bloquant) et on espace les jobs pour réduire
+        # le risque de blocage côté hébergeur.
+        self.inter_job_delay = max(0, int(inter_job_delay))
         self._stop = threading.Event()
         self._thread = None
 
@@ -118,6 +122,10 @@ class YtdlpWorker:
                 job = self._next_queued()
                 if job:
                     self._run_job(job)
+                    # Pause entre deux téléchargements (anti-blocage), puis on
+                    # reprend immédiatement le job suivant s'il y en a un.
+                    if self._stop.wait(self.inter_job_delay):
+                        break
                     continue
             except Exception as exc:
                 error(f"[yt-dlp] worker loop error: {exc}")
