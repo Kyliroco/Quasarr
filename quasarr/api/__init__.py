@@ -111,6 +111,7 @@ def get_api(shared_state_dict, shared_state_lock):
             <h2>🔧 Quick Actions</h2>
             <p><button class="btn-primary" onclick="location.href='/hostnames'">Update Hostnames</button></p>
             <p><button class="btn-primary" onclick="location.href='/ytdlp'">yt-dlp Download Folder</button></p>
+            <p><button class="btn-primary" onclick="location.href='/players'">anime-sama Players</button></p>
             <p><button class="btn-primary" onclick="location.href='/statistics'">View Statistics</button></p>
             <p><button class="btn-primary" onclick="location.href='/debug/'">Debug Dashboard</button></p>
         </div>
