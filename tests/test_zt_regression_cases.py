@@ -12,7 +12,8 @@ Règle de validation :
   - Si une URL attendue est absente → échec du test.
 
 Pour ajouter un nouveau cas de test :
-  python tests/add_zt_test.py --name mon_test --search-url ... --detail-url ...
+  python tests/add_zt_test.py --set-domain www.zone-telechargement.pizza   # quand le domaine change
+  python tests/add_zt_test.py --category films --search "inception" --detail-id 12345 --request-from Radarr
 """
 
 import json
