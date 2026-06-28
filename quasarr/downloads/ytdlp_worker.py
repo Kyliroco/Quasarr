@@ -31,6 +31,40 @@ def get_output_dir(shared_state):
     return configured or DEFAULT_OUTPUT_DIR
 
 
+def _nearest_ownership(path):
+    """UID/GID du plus proche parent existant, si la plateforme le permet."""
+    if not hasattr(os, "chown"):
+        return None
+    current = os.path.abspath(path)
+    while not os.path.exists(current):
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+    try:
+        stat = os.stat(current)
+        return stat.st_uid, stat.st_gid
+    except OSError:
+        return None
+
+
+def _apply_ownership(path, ownership):
+    """Applique récursivement un UID/GID sans suivre les liens symboliques."""
+    if not ownership or not hasattr(os, "chown") or not os.path.exists(path):
+        return
+    uid, gid = ownership
+    chown = getattr(os, "lchown", os.chown)
+    paths = [path]
+    for root, dirs, files in os.walk(path):
+        paths.extend(os.path.join(root, name) for name in dirs)
+        paths.extend(os.path.join(root, name) for name in files)
+    for item in paths:
+        try:
+            chown(item, uid, gid)
+        except OSError as exc:
+            debug(f'[yt-dlp] could not set ownership on "{item}": {exc}')
+
+
 def _category_from_package_id(package_id):
     pid = str(package_id or "")
     if "movies" in pid:
@@ -131,6 +165,7 @@ class YtdlpWorker:
         if self._thread and self._thread.is_alive():
             return self
         self._reset_orphans()
+        self._repair_existing_ownership()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="QuasarrYtdlpWorker", daemon=True)
         self._thread.start()
@@ -176,6 +211,17 @@ class YtdlpWorker:
                 return job
         return None
 
+    def _repair_existing_ownership(self):
+        """Répare au démarrage les dossiers des jobs persistés précédemment."""
+        output_dir = get_output_dir(self.shared_state)
+        ownership = _nearest_ownership(output_dir)
+        if not ownership:
+            return
+        for _package_id, job in get_all_jobs(self.shared_state):
+            safe_name = self.shared_state.sanitize_title(job.get("title", "")) or "download"
+            folder = job.get("storage") or os.path.join(output_dir, safe_name)
+            _apply_ownership(folder, ownership)
+
     # ---------- Persistance ----------
 
     def _save(self, job):
@@ -200,9 +246,12 @@ class YtdlpWorker:
             return
 
         safe_name = self.shared_state.sanitize_title(title) or "download"
-        out_folder = os.path.join(get_output_dir(self.shared_state), safe_name)
+        output_dir = get_output_dir(self.shared_state)
+        ownership = _nearest_ownership(output_dir)
+        out_folder = os.path.join(output_dir, safe_name)
         try:
             os.makedirs(out_folder, exist_ok=True)
+            _apply_ownership(out_folder, ownership)
         except Exception as exc:
             job["status"] = "failed"
             job["error"] = f"cannot create output folder: {exc}"
@@ -224,6 +273,9 @@ class YtdlpWorker:
                 now = time.time()
                 if now - last_save["t"] > 1.5:
                     last_save["t"] = now
+                    current_file = d.get("filename") or d.get("tmpfilename")
+                    if current_file:
+                        _apply_ownership(current_file, ownership)
                     self._save(job)
 
         ydl_opts = {
@@ -282,6 +334,9 @@ class YtdlpWorker:
             downloaded = self._largest_file(out_folder)
             if downloaded:
                 size = os.path.getsize(downloaded)
+                # Sonarr ne voit le job terminé qu'après correction de tous les
+                # fichiers créés par le processus Docker root.
+                _apply_ownership(out_folder, ownership)
                 elapsed = max(0.001, time.time() - started)
                 try:
                     record_player_speed(self.shared_state, _host_tag(link), size / elapsed)
@@ -301,6 +356,7 @@ class YtdlpWorker:
 
         job["status"] = "failed"
         job["error"] = "all embed candidates failed to download"
+        _apply_ownership(out_folder, ownership)
         self._save(job)
         info(f'[yt-dlp] failed "{title}" (no working candidate)')
 

@@ -9,6 +9,8 @@ from quasarr.downloads.ytdlp_worker import (
     MAX_INTER_JOB_DELAY,
     MIN_INTER_JOB_DELAY,
     YtdlpWorker,
+    _apply_ownership,
+    _nearest_ownership,
     enqueue_job,
     get_all_jobs,
     get_output_dir,
@@ -80,6 +82,27 @@ def test_am_page_load_uses_random_jitter(monkeypatch):
     assert am._am_request("GET", "https://anime.invalid/page", timeout=10) is response
     assert waits == [2.4]
     assert calls == [("GET", "https://anime.invalid/page", {"timeout": 10})]
+
+
+def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    folder = output / "Episode"
+    output.mkdir()
+    folder.mkdir()
+    media = folder / "episode.mp4"
+    media.write_bytes(b"video")
+    calls = []
+
+    monkeypatch.setattr(os, "chown", lambda path, uid, gid: calls.append((os.fspath(path), uid, gid)), raising=False)
+    monkeypatch.setattr(os, "lchown", lambda path, uid, gid: calls.append((os.fspath(path), uid, gid)), raising=False)
+    ownership = _nearest_ownership(output)
+    _apply_ownership(folder, (568, 1000))
+
+    assert ownership == (os.stat(output).st_uid, os.stat(output).st_gid)
+    assert set(calls) == {
+        (os.fspath(folder), 568, 1000),
+        (os.fspath(media), 568, 1000),
+    }
 
 
 def test_enqueue_is_fifo_and_does_not_overwrite_active_job(monkeypatch):
