@@ -2,6 +2,7 @@
 # Quasarr
 # Project by https://github.com/rix1337
 
+import os
 import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -55,8 +56,8 @@ _LANG_TO_LOCALE = {
 
 
 def _tmdb_token():
-    from quasarr.storage.config import Config
-    return Config('TMDB').get('token') or ''
+    # Clé TMDB lue depuis l'environnement (comme API_KEY 2captcha / TVDB_API_KEY).
+    return os.getenv("TMDB_API_KEY", "")
 
 
 # Cache process-local des résolutions TMDB /find (les métadonnées sont stables).
