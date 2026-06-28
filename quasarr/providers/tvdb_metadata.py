@@ -10,6 +10,7 @@ directement l'``absoluteNumber`` de TheTVDB (au lieu de l'estimer via TMDB),
 ce qui élimine les décalages dus aux divergences de découpage entre bases.
 """
 
+import os
 import threading
 import time
 
@@ -27,8 +28,10 @@ _episode_map_cache = {}  # series_id -> {(season, episode): absoluteNumber}
 
 
 def _tvdb_key():
-    from quasarr.storage.config import Config
-    return Config('TVDB').get('apikey') or ''
+    # Clé TheTVDB lue depuis l'environnement (comme API_KEY pour 2captcha).
+    # Lecture paresseuse : si absente, TheTVDB est ignoré et on retombe sur TMDB
+    # (pas de crash au démarrage).
+    return os.getenv("TVDB_API_KEY", "")
 
 
 def _get_token(force=False):

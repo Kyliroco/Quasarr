@@ -4,7 +4,6 @@
 
 import base64
 import configparser
-import os
 import re
 import string
 
@@ -40,12 +39,6 @@ class Config(object):
             ("sl", "secret", ""),
             ("wd", "secret", ""),
             ("zt", "secret", "")
-        ],
-        'TMDB': [
-            ("token", "secret",  os.getenv("TMDB_API_KEY")),
-        ],
-        'TVDB': [
-            ("apikey", "secret", os.getenv("TVDB_API_KEY")),
         ],
         'YTDLP': [
             ("output_dir", "str", ""),
