@@ -26,7 +26,15 @@ from urllib.parse import urlparse
 
 import requests
 
-from quasarr.providers.imdb_metadata import get_localized_title, get_romaji_title
+from quasarr.providers.imdb_metadata import (
+    get_localized_title,
+    get_romaji_title,
+    get_season_episode_counts,
+)
+from quasarr.providers.tvdb_metadata import (
+    get_absolute_number as tvdb_absolute_number,
+    get_season_absolute_numbers as tvdb_season_absolute_numbers,
+)
 from quasarr.providers.log import info, debug, error, log_event
 
 hostname = "am"
@@ -350,6 +358,39 @@ def _coerce_int(value):
         return None
 
 
+def _tmdb_offset(shared_state, imdb_id, season_num):
+    """Secours TMDB : nb d'épisodes avant la saison N (None si indisponible)."""
+    counts = get_season_episode_counts(shared_state, imdb_id)
+    if not counts:
+        return None, None
+    offset = sum(cnt for s, cnt in counts.items() if 1 <= s < season_num)
+    return offset, counts.get(season_num)
+
+
+def _absolute_episode(shared_state, imdb_id, season_num, ep):
+    """Numéro absolu d'un (saison, épisode) : TheTVDB d'abord, TMDB en secours."""
+    abs_num = tvdb_absolute_number(shared_state, imdb_id, season_num, ep)
+    if abs_num:
+        return abs_num
+    offset, _len = _tmdb_offset(shared_state, imdb_id, season_num)
+    if offset is not None:
+        debug(f"{hostname.upper()} TVDB miss → TMDB fallback (offset={offset}) "
+              f"for S{season_num}E{ep}")
+        return offset + ep
+    return None
+
+
+def _absolute_season_plan(shared_state, imdb_id, season_num):
+    """[(épisode, absolu), ...] pour une saison entière : TheTVDB d'abord."""
+    pairs = tvdb_season_absolute_numbers(shared_state, imdb_id, season_num)
+    if pairs:
+        return pairs
+    offset, season_len = _tmdb_offset(shared_state, imdb_id, season_num)
+    if offset is not None and season_len:
+        return [(e, offset + e) for e in range(1, season_len + 1)]
+    return []
+
+
 def am_search(shared_state, start_time, request_from, search_string,
               mirror=None, season=None, episode=None):
     releases = []
@@ -421,18 +462,38 @@ def am_search(shared_state, start_time, request_from, search_string,
             releases.append(_build_release(shared_state, title, source, FILM_SIZE_MB, imdb_id))
     else:
         # Sonarr : un épisode précis, ou toute la saison si aucun épisode demandé.
-        if episode_num is not None:
-            episode_numbers = [episode_num]
-        else:
-            episode_numbers = list(range(1, longest + 1))
-
         season_for_tag = season_num if season_num is not None else 1
 
-        for ep in episode_numbers:
-            candidates = _candidates_for_index(eps_map, ep - 1)
+        # "Aligné" = anime-sama possède le dossier de la saison demandée
+        # (ex. Attack on Titan : saison1..4). Sinon anime-sama range tout en
+        # absolu dans un seul dossier (ex. Fairy Tail) : on convertit alors S/E
+        # → numéro absolu via TheTVDB (la source qu'utilise Sonarr), TMDB en
+        # secours. Le titre renvoyé reste en SxxExx (ce que Sonarr attend).
+        # episode_plan = [(épisode_Sonarr, numéro_anime_sama), ...]
+        requested_path = f"saison{season_num}/{LANGUAGE}" if season_num is not None else None
+        aligned = (requested_path is None) or (season_path.lower() == requested_path)
+
+        if aligned:
+            if episode_num is not None:
+                episode_plan = [(episode_num, episode_num)]
+            else:
+                episode_plan = [(e, e) for e in range(1, longest + 1)]
+        else:
+            if episode_num is not None:
+                anime_ep = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
+                episode_plan = [(episode_num, anime_ep)] if anime_ep else []
+            else:
+                episode_plan = _absolute_season_plan(shared_state, imdb_id, season_num)
+            if not episode_plan:
+                debug(f"{hostname.upper()} cannot map S{season_num} to absolute for {slug}")
+                return releases
+            debug(f"{hostname.upper()} absolute mapping {slug} S{season_num}: {episode_plan[:5]}...")
+
+        for ep, anime_ep in episode_plan:
+            candidates = _candidates_for_index(eps_map, anime_ep - 1)
             if not candidates:
                 continue
-            source = f"{base_source}#episode={ep}"
+            source = f"{base_source}#episode={anime_ep}"
             tag = f"S{season_for_tag:02d}E{ep:02d}"
             for name in names:
                 dotted = _dotted_title(name)
