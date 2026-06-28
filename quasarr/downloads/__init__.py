@@ -5,6 +5,7 @@
 # Special note: The signatures of all handlers must stay the same so we can neatly call them in download()
 # Same is true for every get_xx_download_links() function in sources/xx.py
 
+import hashlib
 import json
 
 from quasarr.downloads.linkcrypters.hide import decrypt_links_if_hide
@@ -24,6 +25,12 @@ from quasarr.downloads.ytdlp_worker import enqueue_job
 from quasarr.providers.log import info , debug
 from quasarr.providers.notifications import send_discord_message
 from quasarr.providers.statistics import StatsHelper
+
+
+def _package_id(category, title, url):
+    """Identifiant stable afin que Sonarr retrouve le grab après redémarrage."""
+    digest = hashlib.sha256(f"{title}\0{url}".encode("utf-8")).hexdigest()[:24]
+    return f"SABnzbd_{category}_{digest}"
 
 
 def handle_unprotected(shared_state, title, password, package_id, imdb_id, url,
@@ -162,7 +169,8 @@ def download(shared_state, request_from, title, url, mirror, size_mb, password, 
     else:
         category = "tv"
 
-    package_id = f"SABnzbd_{category}_{str(hash(title + url)).replace('-', '')}"
+    # hash() change à chaque processus Python ; celui-ci doit rester stable.
+    package_id = _package_id(category, title, url)
     if imdb_id is not None and imdb_id.lower() == "none":
         imdb_id = None
 

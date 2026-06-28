@@ -14,12 +14,11 @@ hôtes bloqués retirés. Le worker yt-dlp essaiera chaque candidat dans l'ordre
 import re
 from urllib.parse import urlparse
 
-import requests
-
 from quasarr.providers.log import debug, log_event
 from quasarr.providers.players import is_player_enabled
 from quasarr.search.sources.am import (
     AM_BLOCKED_HOSTS,
+    _am_request,
     _candidates_for_index,
     _host_tag,
     _parse_episodes_js,
@@ -95,7 +94,7 @@ def get_am_download_links(shared_state, url, mirror, title):
     episodes_url = f"https://{am}/catalogue/{slug}/{season_path}/episodes.js"
     headers = {"User-Agent": _user_agent(shared_state)}
     try:
-        response = requests.get(episodes_url, headers=headers, timeout=15)
+        response = _am_request("GET", episodes_url, headers=headers, timeout=15)
         response.raise_for_status()
     except Exception as exc:
         log_event("download_error", source="am-dl", level="ERROR",

@@ -17,6 +17,7 @@ Les releases produites ici sont téléchargées via yt-dlp (voir
 """
 
 import html
+import random
 import re
 import time
 import unicodedata
@@ -63,7 +64,20 @@ FILM_SIZE_MB = 1500
 # La langue est préfixée dynamiquement selon le résultat (VOSTFR / FRENCH).
 RELEASE_QUALITY = "1080p.WEB.x264-ANIMESAMA"
 
+# Jitter anti-blocage appliqué avant chaque chargement HTTP anime-sama. Les
+# requêtes restent indépendantes : une recherche peut continuer pendant que le
+# worker yt-dlp télécharge un autre épisode.
+MIN_REQUEST_DELAY = 0.8
+MAX_REQUEST_DELAY = 5.0
+
 _NUM_RE = re.compile(r"(\d+)")
+
+
+def _am_request(method, url, **kwargs):
+    delay = random.uniform(MIN_REQUEST_DELAY, MAX_REQUEST_DELAY)
+    debug(f"{hostname.upper()} waiting {delay:.2f}s before loading {url}")
+    time.sleep(delay)
+    return requests.request(method, url, **kwargs)
 
 
 def _user_agent(shared_state):
@@ -170,7 +184,7 @@ def _fetch_season_declarations(shared_state, am, slug, headers):
     """Récupère les saisons déclarées sur la fiche (panneauAnime). None si 404."""
     url = f"https://{am}/catalogue/{slug}/"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = _am_request("GET", url, headers=headers, timeout=10)
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load catalogue page {url}: {exc}")
         return None, am
@@ -234,7 +248,8 @@ def _parse_search_results(text):
 def _search_slug(shared_state, am, query, headers):
     """Fallback : recherche anime-sama (fetch.php) → slug le mieux scoré."""
     try:
-        response = requests.post(
+        response = _am_request(
+            "POST",
             f"https://{am}/template-php/defaut/fetch.php",
             data={"query": query}, headers=headers, timeout=10,
         )
@@ -329,7 +344,7 @@ def _select_season_path(declarations, is_movie, season_num):
 def _fetch_episodes(shared_state, am, slug, season_path, headers):
     url = f"https://{am}/catalogue/{slug}/{season_path}/episodes.js"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = _am_request("GET", url, headers=headers, timeout=10)
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load {url}: {exc}")
         return {}, am
