@@ -606,6 +606,14 @@ def search_string_in_sanitized_title(search_string, title):
     sanitized_search_string = sanitize_string(search_string)
     sanitized_title = sanitize_string(title)
 
+    # Garde-fou : une recherche qui se réduit à du vide (ex. titre original en
+    # japonais "アグレッシブ烈子" → "" car les non-ASCII sont retirés) ne doit RIEN
+    # matcher — sinon le motif vide \b\b matcherait tous les titres et ferait
+    # accepter n'importe quelle release.
+    if not sanitized_search_string:
+        debug(f"Empty sanitized search string for {search_string!r}; no match.")
+        return False
+
     # Use word boundaries to ensure full word/phrase match
     if re.search(rf'\b{re.escape(sanitized_search_string)}\b', sanitized_title):
         debug(f"Matched search string: {search_string} with title: {sanitized_title}")

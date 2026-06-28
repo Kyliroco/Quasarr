@@ -39,8 +39,13 @@ from quasarr.providers.log import info, debug, error, log_event
 
 hostname = "am"
 
-# Langue recherchée sur anime-sama (décision projet : VOSTFR uniquement).
-LANGUAGE = "vostfr"
+# Langues anime-sama, par ordre de préférence : on privilégie le VOSTFR, et on
+# retombe sur la VF si une série/saison n'existe qu'en VF (cas fréquent des
+# animes Netflix, ex. Aggretsuko). Pour du strict VOSTFR, mettre ["vostfr"].
+LANGUAGES = ["vostfr", "vf"]
+
+# Tag de langue injecté dans le titre de release (Sonarr reconnaît "FRENCH").
+_LANGUAGE_TAGS = {"vostfr": "VOSTFR", "vf": "FRENCH"}
 
 # Hébergeurs d'embed à exclure d'office (ne marchent pas / pas supportés par
 # yt-dlp). On stocke des sous-chaînes de domaine. "anime-sama" est exclu pour
@@ -53,8 +58,9 @@ AM_BLOCKED_HOSTS = {"anime-sama"}
 EPISODE_SIZE_MB = 450
 FILM_SIZE_MB = 1500
 
-# Tag de qualité/release synthétique (anime-sama n'expose pas la résolution).
-RELEASE_SUFFIX = "VOSTFR.1080p.WEB.x264-ANIMESAMA"
+# Suffixe qualité/release synthétique (anime-sama n'expose pas la résolution).
+# La langue est préfixée dynamiquement selon le résultat (VOSTFR / FRENCH).
+RELEASE_QUALITY = "1080p.WEB.x264-ANIMESAMA"
 
 _NUM_RE = re.compile(r"(\d+)")
 
@@ -266,29 +272,43 @@ def _resolve_slug(shared_state, am, names, headers):
     return None, None, am
 
 
-def _select_season_path(declarations, is_movie, season_num):
-    """Mappe la demande Sonarr/Radarr vers un chemin anime-sama en VOSTFR."""
-    vostfr = [(label, path) for label, path in declarations
-              if path.lower().endswith(f"/{LANGUAGE}")]
-    if not vostfr:
+def _season_path_for_language(declarations, is_movie, season_num, lang):
+    """Chemin anime-sama pour une langue donnée, ou None si absent."""
+    matching = [path for _label, path in declarations
+                if path.lower().endswith(f"/{lang}")]
+    if not matching:
         return None
 
     if is_movie:
-        for label, path in vostfr:
+        for path in matching:
             if path.lower().startswith("film"):
                 return path
         return None
 
-    # Séries : on vise saison<N>, sinon on retombe sur la première saison.
+    saisons = [p for p in matching if p.lower().startswith("saison")]
+    if not saisons:
+        return None
+
     if season_num is not None:
-        want = f"saison{season_num}/{LANGUAGE}"
-        for label, path in vostfr:
+        want = f"saison{season_num}/{lang}"
+        for path in saisons:
             if path.lower() == want:
                 return path
-    for label, path in vostfr:
-        if path.lower().startswith("saison"):
-            return path
-    return None
+        # Saison demandée absente : repli "absolu" seulement s'il n'y a qu'un
+        # seul dossier saison (cas Fairy Tail : tout en saison1). Sinon on laisse
+        # tomber cette langue (une autre langue a peut-être la bonne saison).
+        return saisons[0] if len(saisons) == 1 else None
+
+    return saisons[0]
+
+
+def _select_season_path(declarations, is_movie, season_num):
+    """Mappe la demande vers (chemin, langue) selon l'ordre de préférence."""
+    for lang in LANGUAGES:
+        path = _season_path_for_language(declarations, is_movie, season_num, lang)
+        if path:
+            return path, lang
+    return None, None
 
 
 def _fetch_episodes(shared_state, am, slug, season_path, headers):
@@ -429,11 +449,14 @@ def am_search(shared_state, start_time, request_from, search_string,
     season_num = _coerce_int(season)
     episode_num = _coerce_int(episode)
 
-    season_path = _select_season_path(declarations, is_movie, season_num)
+    season_path, language = _select_season_path(declarations, is_movie, season_num)
     if not season_path:
-        debug(f"{hostname.upper()} no {LANGUAGE} season path for slug '{slug}' "
-              f"(movie={is_movie}, season={season})")
+        debug(f"{hostname.upper()} no {'/'.join(LANGUAGES)} season path for slug "
+              f"'{slug}' (movie={is_movie}, season={season})")
         return releases
+    language_tag = _LANGUAGE_TAGS.get(language, language.upper())
+    release_suffix = f"{language_tag}.{RELEASE_QUALITY}"
+    debug(f"{hostname.upper()} using {season_path} (lang={language}) for {slug}")
 
     eps_map, am = _fetch_episodes(shared_state, am, slug, season_path, headers)
     if not eps_map:
@@ -455,7 +478,7 @@ def am_search(shared_state, start_time, request_from, search_string,
             dotted = _dotted_title(name)
             if not dotted:
                 continue
-            title = f"{dotted}.{RELEASE_SUFFIX}"
+            title = f"{dotted}.{release_suffix}"
             if title in seen_titles:
                 continue
             seen_titles.add(title)
@@ -470,7 +493,7 @@ def am_search(shared_state, start_time, request_from, search_string,
         # → numéro absolu via TheTVDB (la source qu'utilise Sonarr), TMDB en
         # secours. Le titre renvoyé reste en SxxExx (ce que Sonarr attend).
         # episode_plan = [(épisode_Sonarr, numéro_anime_sama), ...]
-        requested_path = f"saison{season_num}/{LANGUAGE}" if season_num is not None else None
+        requested_path = f"saison{season_num}/{language}" if season_num is not None else None
         aligned = (requested_path is None) or (season_path.lower() == requested_path)
 
         if aligned:
@@ -499,7 +522,7 @@ def am_search(shared_state, start_time, request_from, search_string,
                 dotted = _dotted_title(name)
                 if not dotted:
                     continue
-                title = f"{dotted}.{tag}.{RELEASE_SUFFIX}"
+                title = f"{dotted}.{tag}.{release_suffix}"
                 if title in seen_titles:
                     continue
                 seen_titles.add(title)
