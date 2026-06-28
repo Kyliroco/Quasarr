@@ -1425,6 +1425,14 @@ def zt_search(shared_state,
     def perform_query(raw_query):
         nonlocal zt
 
+        # Skip a query with no searchable (Latin) content. The original title can
+        # be non-Latin (e.g. Japanese "アグレッシブ烈子") which would sanitize to an
+        # empty string: useless on Zone-Téléchargement and a source of false
+        # positives. Avoid the wasted, paginated requests entirely.
+        if not shared_state.sanitize_string(raw_query or ""):
+            debug(f"{hostname.upper()} skipping non-searchable query: {raw_query!r}")
+            return
+
         # The Zone-Téléchargement search form limits inputs to 32 characters.
         # Apply the same limit *before* percent-encoding so multibyte characters
         # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
