@@ -8,7 +8,7 @@ from datetime import datetime
 from bottle import request
 
 from quasarr.providers.html_templates import render_form, render_button, render_success, render_fail
-from quasarr.providers.players import get_players, set_player_enabled
+from quasarr.providers.players import get_players, set_player_enabled, format_speed
 from quasarr.storage.config import Config
 from quasarr.storage.setup import hostname_form_html, save_hostnames
 
@@ -79,16 +79,21 @@ def setup_config(app, shared_state):
                 except Exception:
                     seen = "?"
                 safe = _html.escape(name)
+                speed = format_speed(e.get("avg_speed"))
+                samples = e.get("speed_samples", 0)
+                speed_cell = f"{speed}" + (f" ({samples})" if samples else "")
                 rows += (f'<tr><td style="text-align:center;">'
                          f'<input type="checkbox" name="player_{safe}" {checked}></td>'
-                         f'<td>{safe}</td><td>{where}</td><td>{seen}</td></tr>')
+                         f'<td>{safe}</td><td>{where}</td><td>{seen}</td>'
+                         f'<td style="text-align:right;">{speed_cell}</td></tr>')
             body = f'''
             <p>Enable/disable anime-sama players. Disabled players are no longer
             proposed to Sonarr/Radarr nor downloaded. The list grows automatically
-            as new players are discovered.</p>
+            as new players are discovered. "Avg speed" is the mean yt-dlp download
+            speed measured for that player (number of samples in parentheses).</p>
             <form action="/api/players" method="post">
               <table style="margin:0 auto; border-collapse:collapse;">
-                <tr><th>On</th><th>Player</th><th>First seen</th><th>Date</th></tr>
+                <tr><th>On</th><th>Player</th><th>First seen</th><th>Date</th><th>Avg speed</th></tr>
                 {rows}
               </table>
               <br>{render_button("Save", "primary", {"type": "submit"})}

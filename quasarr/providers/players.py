@@ -90,3 +90,32 @@ def set_player_enabled(shared_state, name, enabled):
         shared_state.get_db(TABLE).update_store(name, json.dumps(entry))
         debug(f"Player '{name}' {'enabled' if enabled else 'disabled'}")
         return True
+
+
+def record_player_speed(shared_state, name, speed_bps):
+    """Met à jour la vitesse moyenne (octets/s) d'un lecteur après un download."""
+    if not name or not speed_bps or speed_bps <= 0:
+        return
+    with _LOCK:
+        cache = _load(shared_state)
+        entry = cache.get(name)
+        if not entry:
+            return
+        samples = entry.get("speed_samples", 0)
+        avg = entry.get("avg_speed", 0.0)
+        entry["avg_speed"] = (avg * samples + speed_bps) / (samples + 1)
+        entry["speed_samples"] = samples + 1
+        shared_state.get_db(TABLE).update_store(name, json.dumps(entry))
+        debug(f"Player '{name}' avg speed -> {format_speed(entry['avg_speed'])} "
+              f"({entry['speed_samples']} sample(s))")
+
+
+def format_speed(bps):
+    """Octets/s → chaîne lisible (— si inconnu)."""
+    if not bps or bps <= 0:
+        return "—"
+    value = float(bps)
+    for unit in ("B/s", "KB/s", "MB/s", "GB/s"):
+        if value < 1024 or unit == "GB/s":
+            return f"{value:.1f} {unit}"
+        value /= 1024

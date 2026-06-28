@@ -213,8 +213,12 @@ class YtdlpWorker:
             },
         }
 
+        from quasarr.providers.players import record_player_speed
+        from quasarr.search.sources.am import _host_tag
+
         for index, link in enumerate(job.get("candidates", []), start=1):
             info(f'[yt-dlp] ({index}/{len(job["candidates"])}) "{title}" via {link}')
+            started = time.time()
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([link])
@@ -224,10 +228,16 @@ class YtdlpWorker:
 
             downloaded = self._largest_file(out_folder)
             if downloaded:
+                size = os.path.getsize(downloaded)
+                elapsed = max(0.001, time.time() - started)
+                try:
+                    record_player_speed(self.shared_state, _host_tag(link), size / elapsed)
+                except Exception as exc:
+                    debug(f"[yt-dlp] could not record speed: {exc}")
                 job["status"] = "completed"
                 job["storage"] = out_folder
-                job["bytes_loaded"] = os.path.getsize(downloaded)
-                job["bytes_total"] = job["bytes_loaded"]
+                job["bytes_loaded"] = size
+                job["bytes_total"] = size
                 job["percent"] = 100
                 job["eta"] = 0
                 job["error"] = ""
