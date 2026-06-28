@@ -13,21 +13,22 @@ queue/history à Sonarr/Radarr exactement comme pour les paquets JDownloader.
 
 import json
 import os
+import random
 import threading
 import time
 
 from quasarr.providers.log import info, debug, error
 
 YTDLP_TABLE = "ytdlp"
+DEFAULT_OUTPUT_DIR = "/output"
+MIN_INTER_JOB_DELAY = 0.8
+MAX_INTER_JOB_DELAY = 5.0
 
 
 def get_output_dir(shared_state):
-    """Dossier de sortie yt-dlp (configurable via l'UI, défaut <config>/downloads)."""
+    """Dossier de sortie yt-dlp (configurable via l'UI, défaut ``/output``)."""
     configured = shared_state.values["config"]("YTDLP").get("output_dir")
-    if configured:
-        return configured
-    config_dir = os.path.dirname(shared_state.values["dbfile"])
-    return os.path.join(config_dir, "downloads")
+    return configured or DEFAULT_OUTPUT_DIR
 
 
 def _category_from_package_id(package_id):
@@ -40,7 +41,18 @@ def _category_from_package_id(package_id):
 
 
 def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb):
-    """Crée (ou remplace) un job yt-dlp en attente."""
+    """Crée un job persistant sans écraser un téléchargement déjà connu."""
+    database = shared_state.get_db(YTDLP_TABLE)
+    existing_raw = database.retrieve(package_id)
+    if existing_raw:
+        try:
+            existing = json.loads(existing_raw)
+            if existing.get("status") in {"queued", "downloading", "completed"}:
+                debug(f'[yt-dlp] keeping existing {existing.get("status")} job "{title}"')
+                return existing
+        except (TypeError, ValueError):
+            pass
+
     try:
         size_mb_int = int(float(size_mb))
     except (TypeError, ValueError):
@@ -61,8 +73,10 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb):
         "storage": "",
         "error": "",
         "added": int(time.time()),
+        "added_ns": time.time_ns(),
+        "candidate_index": 0,
     }
-    shared_state.get_db(YTDLP_TABLE).update_store(package_id, json.dumps(job))
+    database.update_store(package_id, json.dumps(job))
     info(f'Queued yt-dlp download for "{title}" ({len(job["candidates"])} candidate link(s))')
     return job
 
@@ -76,7 +90,13 @@ def get_all_jobs(shared_state):
             jobs.append((package_id, json.loads(raw)))
         except Exception:
             continue
-    return jobs
+    return sorted(
+        jobs,
+        key=lambda row: (
+            int(row[1].get("added_ns") or (int(row[1].get("added") or 0) * 1_000_000_000)),
+            row[0],
+        ),
+    )
 
 
 def _format_eta(seconds):
@@ -87,13 +107,21 @@ def _format_eta(seconds):
 
 
 class YtdlpWorker:
-    def __init__(self, shared_state, poll_interval=3, inter_job_delay=5):
+    def __init__(self, shared_state, poll_interval=3,
+                 inter_job_delay=(MIN_INTER_JOB_DELAY, MAX_INTER_JOB_DELAY),
+                 random_uniform=None):
         self.shared_state = shared_state
-        self.poll_interval = max(1, int(poll_interval))
-        # Délai entre deux téléchargements : on télécharge STRICTEMENT 1 par 1
-        # (un seul thread, _run_job bloquant) et on espace les jobs pour réduire
-        # le risque de blocage côté hébergeur.
-        self.inter_job_delay = max(0, int(inter_job_delay))
+        self.poll_interval = max(0.1, float(poll_interval))
+        # Le worker bloquant garantit un seul téléchargement actif. Les grabs
+        # reçus en parallèle restent persistés dans la file avec status=queued.
+        if isinstance(inter_job_delay, (int, float)):
+            delay = max(0.0, float(inter_job_delay))
+            self.inter_job_delay = (delay, delay)
+        else:
+            low, high = inter_job_delay
+            low, high = max(0.0, float(low)), max(0.0, float(high))
+            self.inter_job_delay = (min(low, high), max(low, high))
+        self._random_uniform = random_uniform or random.uniform
         self._stop = threading.Event()
         self._thread = None
 
@@ -122,10 +150,12 @@ class YtdlpWorker:
                 job = self._next_queued()
                 if job:
                     self._run_job(job)
-                    # Pause entre deux téléchargements (anti-blocage), puis on
-                    # reprend immédiatement le job suivant s'il y en a un.
-                    if self._stop.wait(self.inter_job_delay):
-                        break
+                    # Pause anti-blocage aléatoire uniquement si un job attend.
+                    if self._next_queued():
+                        delay = self._random_uniform(*self.inter_job_delay)
+                        debug(f"[yt-dlp] waiting {delay:.2f}s before next queued download")
+                        if self._stop.wait(delay):
+                            break
                     continue
             except Exception as exc:
                 error(f"[yt-dlp] worker loop error: {exc}")
@@ -137,6 +167,7 @@ class YtdlpWorker:
         for package_id, job in get_all_jobs(self.shared_state):
             if job.get("status") == "downloading":
                 job["status"] = "queued"
+                job["resumed"] = True
                 self._save(job)
 
     def _next_queued(self):
@@ -201,6 +232,11 @@ class YtdlpWorker:
             "no_warnings": True,
             "noprogress": True,
             "noplaylist": True,
+            # yt-dlp conserve le .part/.ytdl et reprend les octets/fragments
+            # existants après un redémarrage de Quasarr.
+            "continuedl": True,
+            "nopart": False,
+            "overwrites": False,
             "retries": 3,
             "fragment_retries": 3,
             "concurrent_fragment_downloads": 4,
@@ -216,14 +252,31 @@ class YtdlpWorker:
         from quasarr.providers.players import record_player_speed
         from quasarr.search.sources.am import _host_tag
 
-        for index, link in enumerate(job.get("candidates", []), start=1):
-            info(f'[yt-dlp] ({index}/{len(job["candidates"])}) "{title}" via {link}')
+        candidates = job.get("candidates", [])
+        start_index = max(0, min(int(job.get("candidate_index") or 0), len(candidates)))
+        for candidate_index in range(start_index, len(candidates)):
+            link = candidates[candidate_index]
+            job["candidate_index"] = candidate_index
+            job["active_candidate"] = link
+            self._save(job)
+            info(f'[yt-dlp] ({candidate_index + 1}/{len(candidates)}) "{title}" via {link}')
             started = time.time()
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([link])
             except Exception as exc:
                 debug(f"[yt-dlp] candidate failed ({link}): {exc}")
+                # Les fragments d'un lecteur ne doivent pas être repris avec
+                # un autre. Tant que le processus redémarre sur le même index,
+                # ils sont conservés ; ils sont supprimés seulement à l'abandon.
+                job["candidate_index"] = candidate_index + 1
+                job["active_candidate"] = ""
+                job["bytes_total"] = 0
+                job["bytes_loaded"] = 0
+                job["eta"] = None
+                job["percent"] = 0
+                self._save(job)
+                self._remove_partial_files(out_folder)
                 continue
 
             downloaded = self._largest_file(out_folder)
@@ -241,6 +294,7 @@ class YtdlpWorker:
                 job["percent"] = 100
                 job["eta"] = 0
                 job["error"] = ""
+                job["active_candidate"] = ""
                 self._save(job)
                 info(f'[yt-dlp] completed "{title}" -> {downloaded}')
                 return
@@ -266,3 +320,14 @@ class YtdlpWorker:
                 if size > best_size:
                     best, best_size = path, size
         return best
+
+    @staticmethod
+    def _remove_partial_files(folder):
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                if not (name.endswith(".part") or name.endswith(".ytdl")):
+                    continue
+                try:
+                    os.remove(os.path.join(root, name))
+                except OSError:
+                    pass
