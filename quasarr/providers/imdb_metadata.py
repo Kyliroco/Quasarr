@@ -132,6 +132,43 @@ def get_localized_title(shared_state, imdb_id, language='de', original_title=Fal
     return localized_title, titre_original
 
 
+def get_romaji_title(shared_state, imdb_id):
+    """Titre romaji (japonais en alphabet latin) via TMDB alternative_titles.
+
+    ``original_name`` de TMDB est en script japonais (進撃の巨人) : inutilisable
+    pour un slug anime-sama. Le romaji (ex. "Shingeki no Kyojin") se trouve dans
+    les titres alternatifs. Retourne None si introuvable.
+    """
+    result, media_type = _tmdb_find(imdb_id)
+    if not result:
+        return None
+    tmdb_id = result.get('id')
+    token = _tmdb_token()
+    if not tmdb_id or not token:
+        return None
+
+    kind = 'tv' if media_type == 'tv' else 'movie'
+    url = f'https://api.themoviedb.org/3/{kind}/{tmdb_id}/alternative_titles'
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
+        debug(f"TMDB alternative_titles failed for {imdb_id}: {e}", source="tmdb")
+        return None
+    if r.status_code != 200:
+        return None
+
+    # /tv utilise la clé "results", /movie la clé "titles"
+    items = r.json().get('results') or r.json().get('titles') or []
+    for item in items:
+        if 'romaji' in (item.get('type') or '').lower():
+            title = item.get('title')
+            if title:
+                debug(f"TMDB romaji for {imdb_id}: {title!r}", source="tmdb")
+                return title
+    return None
+
+
 def get_type(shared_state, imdb_id, language='fr'):
     locale = _LANG_TO_LOCALE.get(language, f'{language}-{language.upper()}')
     result, _ = _tmdb_find(imdb_id, language=locale)

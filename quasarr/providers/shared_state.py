@@ -163,7 +163,7 @@ def connect_to_jd(jd, user, password, device_name):
         device.downloadcontroller.get_current_state()  # request forces direct_connection info update
         connection_info = device.check_direct_connection()
         if connection_info["status"]:
-            info(f'Direct connection to JDownloader established: "{connection_info['ip']}"')
+            info(f"Direct connection to JDownloader established: \"{connection_info['ip']}\"")
         else:
             info("Could not establish direct connection to JDownloader.")
         update("device", device)

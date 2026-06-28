@@ -131,6 +131,7 @@ def delete_package(shared_state, package_id):
                     # no state check, just clean up whatever exists with the package id
                     shared_state.get_db("failed").delete(package_id)
                     shared_state.get_db("protected").delete(package_id)
+                    shared_state.get_db("ytdlp").delete(package_id)
 
                     if package_location == "queue":
                         package_name_field = "filename"

@@ -275,6 +275,47 @@ class PackageSnapshotter:
                 })
                 h_idx += 1
 
+        # 6b) Jobs yt-dlp (anime-sama) — même rendu queue/history que JDownloader
+        try:
+            from quasarr.downloads.ytdlp_worker import get_all_jobs
+            for package_id, job in get_all_jobs(self.shared_state):
+                status = job.get("status")
+                cat = job.get("category") or _cat_from_id(package_id)
+                title = job.get("title", "<unknown>")
+                if status in ("queued", "downloading"):
+                    bytes_total = int(job.get("bytes_total") or 0)
+                    bytes_loaded = int(job.get("bytes_loaded") or 0)
+                    if bytes_total:
+                        mb_total_i = int(bytes_total / (1024 * 1024))
+                        mb_left_i = max(0, int((bytes_total - bytes_loaded) / (1024 * 1024)))
+                    else:
+                        mb_total_i = int(job.get("size_mb") or 0)
+                        mb_left_i = mb_total_i
+                    eta = job.get("eta")
+                    timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
+                    label = "Queued" if status == "queued" else "Downloading"
+                    downloads["queue"].append({
+                        "index": q_idx, "nzo_id": package_id, "priority": "Normal",
+                        "filename": f"[yt-dlp/{label}] {title}", "cat": cat,
+                        "mbleft": mb_left_i, "mb": mb_total_i, "status": "Downloading",
+                        "percentage": int(job.get("percent") or 0), "timeleft": timeleft,
+                        "type": "ytdlp", "uuid": package_id,
+                    })
+                    q_idx += 1
+                elif status in ("completed", "failed"):
+                    err = job.get("error") if status == "failed" else ""
+                    downloads["history"].append({
+                        "fail_message": err or "", "category": cat,
+                        "storage": job.get("storage", ""),
+                        "status": "Failed" if status == "failed" else "Completed",
+                        "nzo_id": package_id, "name": title,
+                        "bytes": int(job.get("bytes_loaded") or 0),
+                        "percentage": 100, "type": "ytdlp", "uuid": package_id,
+                    })
+                    h_idx += 1
+        except Exception as exc:
+            debug(f"[Snapshotter] yt-dlp jobs read failed: {exc}")
+
         # 7) Démarrage automatique (pas de re-requête)
         try:
             if not self.shared_state.get_device().linkgrabber.is_collecting():

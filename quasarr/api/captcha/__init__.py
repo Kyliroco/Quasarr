@@ -275,7 +275,8 @@ def setup_captcha_routes(app):
 
     @app.post('/captcha/<captcha_id>.html')
     def proxy_html(captcha_id):
-        target_url = f"{captcha_values()["url"]}/captcha/{captcha_id}.html"
+        captcha_url = captcha_values()["url"]
+        target_url = f"{captcha_url}/captcha/{captcha_id}.html"
 
         headers = {key: value for key, value in request.headers.items() if key != 'Host'}
         data = request.body.read()
@@ -295,7 +296,8 @@ def setup_captcha_routes(app):
 
     @app.post('/captcha/<captcha_id>.json')
     def proxy_json(captcha_id):
-        target_url = f"{captcha_values()["url"]}/captcha/{captcha_id}.json"
+        captcha_url = captcha_values()["url"]
+        target_url = f"{captcha_url}/captcha/{captcha_id}.json"
 
         headers = {key: value for key, value in request.headers.items() if key != 'Host'}
         data = request.body.read()
@@ -319,7 +321,8 @@ def setup_captcha_routes(app):
 
     @app.get('/captcha/<captcha_id>/<uuid>/<filename>')
     def proxy_pngs(captcha_id, uuid, filename):
-        new_url = f"{captcha_values()["url"]}/captcha/{captcha_id}/{uuid}/{filename}"
+        captcha_url = captcha_values()["url"]
+        new_url = f"{captcha_url}/captcha/{captcha_id}/{uuid}/{filename}"
 
         try:
             external_response = requests.get(new_url, stream=True, verify=False)
@@ -334,7 +337,8 @@ def setup_captcha_routes(app):
 
     @app.post('/captcha/<captcha_id>/check')
     def proxy_check(captcha_id):
-        new_url = f"{captcha_values()["url"]}/captcha/{captcha_id}/check"
+        captcha_url = captcha_values()["url"]
+        new_url = f"{captcha_url}/captcha/{captcha_id}/check"
         headers = {key: value for key, value in request.headers.items()}
 
         data = request.body.read()

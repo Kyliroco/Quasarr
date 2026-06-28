@@ -1,0 +1,29 @@
+{
+  "name": "demo_inception",
+  "search_url": "https://www.zone-telechargement.test/?p=films&search=inception",
+  "request_from": "Radarr",
+  "search_string": "Inception",
+  "season": null,
+  "episode": null,
+  "mirror": null,
+  "search_pages": [
+    "search_p1.html"
+  ],
+  "detail_pages": {
+    "id=45231": {
+      "fixture": "detail_45231.html",
+      "expected_dl_protect_urls": [
+        "https://dl-protect.test/aa11bb?rl=a2",
+        "https://dl-protect.test/cc22dd?rl=a2",
+        "https://dl-protect.test/ee33ff?rl=a2"
+      ]
+    },
+    "id=45232": {
+      "fixture": "detail_45232.html",
+      "expected_dl_protect_urls": [
+        "https://dl-protect.test/4k-1f-aa?rl=a2",
+        "https://dl-protect.test/4k-rg-bb?rl=a2"
+      ]
+    }
+  }
+}

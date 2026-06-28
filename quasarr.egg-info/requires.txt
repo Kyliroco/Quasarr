@@ -1,0 +1,8 @@
+beautifulsoup4>=4.13.4
+bottle>=0.13.4
+dukpy>=0.5.0
+pillow>=11.3.0
+pycryptodomex>=3.23.0
+requests>=2.32.4
+dateparser
+yt-dlp>=2024.8.6
