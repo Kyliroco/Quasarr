@@ -28,6 +28,7 @@ class PackageSnapshotter:
         self.shared_state = shared_state
         self.interval = max(5, int(interval))  # garde-fou
         self._lock = threading.RLock()
+        self._refresh_lock = threading.Lock()
         self._snapshot: Dict[str, Any] = {"queue": [], "history": []}
         self._last_updated: float = 0.0
         self._last_error: Optional[str] = None
@@ -57,16 +58,20 @@ class PackageSnapshotter:
 
     def force_refresh(self) -> None:
         """Optionnel: rafraîchir à la demande (non bloquant côté requête HTTP)."""
-        try:
-            snapshot = self._build_snapshot()
-            with self._lock:
-                self._snapshot = snapshot
-                self._last_updated = time.time()
-                self._last_error = None
-        except Exception as e:
-            with self._lock:
-                self._last_error = f"{type(e).__name__}: {e}"
-            debug(f"[Snapshotter] force_refresh error: {e}")
+        # Les transitions très rapides queued -> downloading -> completed
+        # peuvent demander plusieurs refresh simultanés. On les sérialise afin
+        # que le dernier état ne soit jamais remplacé par un snapshot plus ancien.
+        with self._refresh_lock:
+            try:
+                snapshot = self._build_snapshot()
+                with self._lock:
+                    self._snapshot = snapshot
+                    self._last_updated = time.time()
+                    self._last_error = None
+            except Exception as e:
+                with self._lock:
+                    self._last_error = f"{type(e).__name__}: {e}"
+                debug(f"[Snapshotter] force_refresh error: {e}")
 
     # ---------- Thread loop ----------
 
