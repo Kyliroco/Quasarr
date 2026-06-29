@@ -220,6 +220,27 @@ def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
     assert snapshot["history"][0]["storage"] == "/output/Instant.S01E01"
 
 
+def test_failed_am_job_goes_directly_to_history_for_sonarr_blocklist():
+    state = FakeState()
+    job = enqueue_job(state, "pkg-failed-fast", "Failed.S01E01", ["https://one"], "tt1", 450)
+    job.update({
+        "status": "failed",
+        "storage": "/output/Failed.S01E01",
+        "error": "DownloadError: HTTP Error 403: Forbidden",
+        "completed_at": 123,
+    })
+    state.db.update_store("pkg-failed-fast", json.dumps(job))
+    snapshotter = PackageSnapshotter(state)
+
+    snapshot, _, _ = snapshotter.get()
+
+    assert snapshot["queue"] == []
+    assert snapshot["history"][0]["nzo_id"] == "pkg-failed-fast"
+    assert snapshot["history"][0]["status"] == "Failed"
+    assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403: Forbidden"
+    assert snapshot["history"][0]["storage"] == "/output/Failed.S01E01"
+
+
 def test_legacy_fallback_jobs_are_migrated_to_one_player():
     state = FakeState()
     legacy = enqueue_job(state, "pkg-legacy", "Episode", ["https://one", "https://two"], "tt1", 450)

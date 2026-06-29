@@ -27,7 +27,12 @@ def _ytdlp_slot(package_id, job, index=0):
     status = job.get("status")
     cat = job.get("category") or _cat_from_id(package_id)
     title = job.get("title", "<unknown>")
-    terminal_waiting_for_queue_ack = status in ("completed", "failed") and not job.get("queue_seen", False)
+    # Un téléchargement terminé très vite doit être montré au moins une fois
+    # dans la queue avant son passage en historique. Un échec, en revanche,
+    # doit aller directement dans l'historique ``Failed`` : Sonarr enchaîne
+    # ses appels queue/history et pourrait sinon conserver l'état Downloading
+    # vu juste avant, sans déclencher la blocklist.
+    terminal_waiting_for_queue_ack = status == "completed" and not job.get("queue_seen", False)
     if status in ("queued", "downloading") or terminal_waiting_for_queue_ack:
         bytes_total = int(job.get("bytes_total") or 0)
         bytes_loaded = int(job.get("bytes_loaded") or 0)
@@ -40,7 +45,7 @@ def _ytdlp_slot(package_id, job, index=0):
         if terminal_waiting_for_queue_ack:
             mb_left = 0
             timeleft = "00:00:00"
-            label = "Completed" if status == "completed" else "Failed"
+            label = "Completed"
         else:
             eta = job.get("eta")
             timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
