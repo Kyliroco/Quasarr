@@ -151,6 +151,8 @@ def setup_arr_routes(app):
                 nzo_ids.append(package_id)
             except KeyError:
                 error(f'Failed to download "{title}" - no package_id returned', source="api")
+        snap = request.app.config['snapshotter']
+        threading.Thread(target=snap.force_refresh, daemon=True).start()
         return {
             "status": True,
             "nzo_ids": nzo_ids
@@ -264,7 +266,7 @@ def setup_arr_routes(app):
                         imdb_id or None,
                     )
                     snap = request.app.config['snapshotter']
-                    threading.Thread(target=snap.force_refresh).start()
+                    threading.Thread(target=snap.force_refresh, daemon=True).start()
                     try:
                         success = downloaded["success"]
                         package_id = downloaded["package_id"]

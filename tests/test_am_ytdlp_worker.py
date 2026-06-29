@@ -134,7 +134,12 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     job["candidate_index"] = 1
     state.db.update_store(job["package_id"], json.dumps(job))
 
-    worker = YtdlpWorker(state, inter_job_delay=0)
+    statuses = []
+    worker = YtdlpWorker(
+        state,
+        inter_job_delay=0,
+        on_status_change=lambda changed: statuses.append(changed["status"]),
+    )
     worker._reset_orphans()
     resumed = json.loads(state.db.retrieve("pkg-resume"))
     assert resumed["status"] == "queued"
@@ -174,3 +179,4 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     assert calls[0]["continuedl"] is True
     assert calls[0]["nopart"] is False
     assert calls[0]["overwrites"] is False
+    assert statuses == ["downloading", "completed"]

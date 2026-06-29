@@ -2,6 +2,8 @@
 # Quasarr
 # Project by https://github.com/rix1337
 
+import threading
+
 from bottle import Bottle
 
 import quasarr.providers.html_images as images
@@ -25,7 +27,14 @@ def get_api(shared_state_dict, shared_state_lock):
     app = Bottle()
     snapshotter = PackageSnapshotter(shared_state, interval=30).start()
     app.config['snapshotter'] = snapshotter
-    ytdlp_worker = YtdlpWorker(shared_state).start()
+
+    def refresh_ytdlp_status(_job):
+        threading.Thread(target=snapshotter.force_refresh, daemon=True).start()
+
+    ytdlp_worker = YtdlpWorker(
+        shared_state,
+        on_status_change=refresh_ytdlp_status,
+    ).start()
     app.config['ytdlp_worker'] = ytdlp_worker
     setup_arr_routes(app)
     setup_captcha_routes(app)

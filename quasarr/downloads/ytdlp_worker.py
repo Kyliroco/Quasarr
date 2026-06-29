@@ -143,7 +143,7 @@ def _format_eta(seconds):
 class YtdlpWorker:
     def __init__(self, shared_state, poll_interval=3,
                  inter_job_delay=(MIN_INTER_JOB_DELAY, MAX_INTER_JOB_DELAY),
-                 random_uniform=None):
+                 random_uniform=None, on_status_change=None):
         self.shared_state = shared_state
         self.poll_interval = max(0.1, float(poll_interval))
         # Le worker bloquant garantit un seul téléchargement actif. Les grabs
@@ -156,6 +156,7 @@ class YtdlpWorker:
             low, high = max(0.0, float(low)), max(0.0, float(high))
             self.inter_job_delay = (min(low, high), max(low, high))
         self._random_uniform = random_uniform or random.uniform
+        self._on_status_change = on_status_change
         self._stop = threading.Event()
         self._thread = None
 
@@ -229,12 +230,21 @@ class YtdlpWorker:
             job["package_id"], json.dumps(job)
         )
 
+    def _notify_status_change(self, job):
+        if not self._on_status_change:
+            return
+        try:
+            self._on_status_change(dict(job))
+        except Exception as exc:
+            debug(f"[yt-dlp] status notification failed: {exc}")
+
     # ---------- Téléchargement ----------
 
     def _run_job(self, job):
         title = job.get("title", "download")
         job["status"] = "downloading"
         self._save(job)
+        self._notify_status_change(job)
 
         try:
             import yt_dlp
@@ -242,6 +252,7 @@ class YtdlpWorker:
             job["status"] = "failed"
             job["error"] = f"yt-dlp not installed: {exc}"
             self._save(job)
+            self._notify_status_change(job)
             error(f"[yt-dlp] cannot import yt_dlp: {exc}")
             return
 
@@ -256,6 +267,7 @@ class YtdlpWorker:
             job["status"] = "failed"
             job["error"] = f"cannot create output folder: {exc}"
             self._save(job)
+            self._notify_status_change(job)
             error(f'[yt-dlp] cannot create "{out_folder}": {exc}')
             return
 
@@ -351,6 +363,7 @@ class YtdlpWorker:
                 job["error"] = ""
                 job["active_candidate"] = ""
                 self._save(job)
+                self._notify_status_change(job)
                 info(f'[yt-dlp] completed "{title}" -> {downloaded}')
                 return
 
@@ -358,6 +371,7 @@ class YtdlpWorker:
         job["error"] = "all embed candidates failed to download"
         _apply_ownership(out_folder, ownership)
         self._save(job)
+        self._notify_status_change(job)
         info(f'[yt-dlp] failed "{title}" (no working candidate)')
 
     @staticmethod
