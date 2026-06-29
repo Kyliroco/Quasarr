@@ -17,6 +17,7 @@ from quasarr.downloads.ytdlp_worker import (
     enqueue_job,
     get_all_jobs,
     get_output_dir,
+    mark_queue_seen,
 )
 from quasarr.search.sources import am
 
@@ -173,7 +174,7 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     snapshot, _, _ = snapshotter.get()
     assert snapshot["queue"][0]["nzo_id"] == "pkg-fast"
 
-    job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024)
+    job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024, queue_seen=True)
     state.db.update_store("pkg-fast", json.dumps(job))
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
@@ -189,7 +190,7 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403"
 
 
-def test_sonarr_snapshot_always_overlays_latest_persisted_am_state():
+def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
     state = FakeState()
     job = enqueue_job(state, "pkg-instant", "Instant.S01E01", ["https://one"], "tt1", 450)
     job.update({
@@ -204,6 +205,13 @@ def test_sonarr_snapshot_always_overlays_latest_persisted_am_state():
     # Simule un ancien refresh JDownloader ayant publié un cache sans le job AM.
     snapshotter._snapshot = {"queue": [], "history": []}
 
+    snapshot, _, _ = snapshotter.get()
+
+    assert snapshot["queue"][0]["nzo_id"] == "pkg-instant"
+    assert snapshot["queue"][0]["percentage"] == 100
+    assert snapshot["history"] == []
+
+    mark_queue_seen(state, ["pkg-instant"])
     snapshot, _, _ = snapshotter.get()
 
     assert snapshot["queue"] == []
