@@ -349,3 +349,50 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     assert calls[0]["nopart"] is False
     assert calls[0]["overwrites"] is False
     assert statuses == ["downloading", "completed"]
+
+
+def test_sibnet_uses_ipv4_source_referer_and_retries_403(tmp_path, monkeypatch):
+    state = FakeState(str(tmp_path))
+    source_url = "https://anime-sama.to/catalogue/aggretsuko/saison1/vf/#episode=4&player=Sibnet"
+    link = "https://video.sibnet.ru/shell.php?videoid=5452020"
+    job = enqueue_job(
+        state,
+        "pkg-sibnet",
+        "Aggretsuko.S01E04",
+        [link],
+        "tt8019444",
+        450,
+        source_url=source_url,
+    )
+    calls = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            calls.append(options)
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def download(self, links):
+            assert links == [link]
+            if len(calls) < 3:
+                raise RuntimeError("HTTP Error 403: Forbidden")
+            final = self.options["outtmpl"].replace("%(ext)s", "mp4")
+            with open(final, "wb") as stream:
+                stream.write(b"complete file")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    worker = YtdlpWorker(state, inter_job_delay=0, random_uniform=lambda _low, _high: 0)
+    worker._run_job(job)
+
+    completed = json.loads(state.db.retrieve("pkg-sibnet"))
+    assert completed["status"] == "completed"
+    assert completed["source_url"] == source_url
+    assert len(calls) == 3
+    assert all(options["source_address"] == "0.0.0.0" for options in calls)
+    assert all(options["http_headers"] == {"Referer": source_url} for options in calls)
+    assert all("User-Agent" not in options["http_headers"] for options in calls)

@@ -16,6 +16,7 @@ import os
 import random
 import threading
 import time
+from urllib.parse import urlparse
 
 from quasarr.providers.log import info, debug, error
 
@@ -74,7 +75,7 @@ def _category_from_package_id(package_id):
     return "tv"
 
 
-def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb):
+def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, source_url=None):
     """Crée un job persistant sans écraser un téléchargement déjà connu."""
     database = shared_state.get_db(YTDLP_TABLE)
     existing_raw = database.retrieve(package_id)
@@ -96,6 +97,7 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb):
         "package_id": package_id,
         "title": title,
         "candidates": list(candidates or []),
+        "source_url": source_url or "",
         "imdb_id": imdb_id,
         "category": _category_from_package_id(package_id),
         "size_mb": size_mb_int,
@@ -370,8 +372,9 @@ class YtdlpWorker:
             "concurrent_fragment_downloads": 4,
             "merge_output_format": "mp4",
             "progress_hooks": [progress_hook],
-            # On laisse les extracteurs yt-dlp gérer leur propre Referer : forcer
-            # celui d'anime-sama casserait certains hébergeurs (sendvid, vidmoly…).
+            # Les autres lecteurs conservent le comportement historique. Pour
+            # Sibnet, ces en-têtes sont remplacés plus bas par ceux qui ont été
+            # validés avec la commande yt-dlp locale.
             "http_headers": {
                 "User-Agent": self.shared_state.values.get("user_agent", ""),
             },
@@ -395,10 +398,35 @@ class YtdlpWorker:
             self._save(job)
             info(f'[yt-dlp] ({candidate_index + 1}/{len(candidates)}) "{title}" via {link}')
             started = time.time()
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([link])
-            except Exception as exc:
+            candidate_opts = dict(ydl_opts)
+            is_sibnet = "sibnet.ru" in urlparse(link).netloc.lower()
+            if is_sibnet:
+                # Sibnet peut refuser l'IPv6 ou un User-Agent navigateur forcé
+                # depuis Docker. On reproduit la commande yt-dlp locale : UA
+                # natif yt-dlp, IPv4, avec le Referer réel de la page anime-sama.
+                candidate_opts["source_address"] = "0.0.0.0"
+                candidate_opts["http_headers"] = {
+                    "Referer": job.get("source_url") or "https://anime-sama.to/",
+                }
+
+            candidate_error = None
+            for attempt in range(1, 4):
+                try:
+                    with yt_dlp.YoutubeDL(candidate_opts) as ydl:
+                        ydl.download([link])
+                    candidate_error = None
+                    break
+                except Exception as exc:
+                    candidate_error = exc
+                    if not is_sibnet or "403" not in str(exc) or attempt >= 3:
+                        break
+                    delay = self._random_uniform(MIN_INTER_JOB_DELAY, MAX_INTER_JOB_DELAY)
+                    info(f'[yt-dlp] Sibnet HTTP 403, retry {attempt}/3 in {delay:.2f}s')
+                    if self._stop.wait(delay):
+                        break
+
+            if candidate_error is not None:
+                exc = candidate_error
                 last_error = f"{type(exc).__name__}: {exc}"
                 job["last_error"] = last_error
                 error(
