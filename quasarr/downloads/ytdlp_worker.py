@@ -104,6 +104,8 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb):
         "bytes_loaded": 0,
         "eta": None,
         "percent": 0,
+        "speed_bps": 0,
+        "average_speed_bps": 0,
         "storage": "",
         "error": "",
         "added": int(time.time()),
@@ -243,6 +245,9 @@ class YtdlpWorker:
     def _run_job(self, job):
         title = job.get("title", "download")
         job["status"] = "downloading"
+        job["started_at"] = int(time.time())
+        job["updated_at"] = int(time.time())
+        job["speed_bps"] = 0
         self._save(job)
         self._notify_status_change(job)
 
@@ -271,7 +276,7 @@ class YtdlpWorker:
             error(f'[yt-dlp] cannot create "{out_folder}": {exc}')
             return
 
-        last_save = {"t": 0.0}
+        last_save = {"t": 0.0, "sample_t": time.time(), "sample_bytes": 0}
 
         def progress_hook(d):
             status = d.get("status")
@@ -282,7 +287,15 @@ class YtdlpWorker:
                 job["bytes_loaded"] = loaded
                 job["eta"] = d.get("eta")
                 job["percent"] = int(100 * loaded / total) if total else 0
+                speed = float(d.get("speed") or 0)
                 now = time.time()
+                if speed <= 0 and now > last_save["sample_t"] and loaded >= last_save["sample_bytes"]:
+                    speed = (loaded - last_save["sample_bytes"]) / (now - last_save["sample_t"])
+                job["speed_bps"] = max(0, int(speed))
+                job["updated_at"] = int(now)
+                job["filename"] = d.get("filename") or d.get("tmpfilename") or job.get("filename", "")
+                last_save["sample_t"] = now
+                last_save["sample_bytes"] = loaded
                 if now - last_save["t"] > 1.5:
                     last_save["t"] = now
                     current_file = d.get("filename") or d.get("tmpfilename")
@@ -317,11 +330,17 @@ class YtdlpWorker:
         from quasarr.search.sources.am import _host_tag
 
         candidates = job.get("candidates", [])
+        last_error = ""
         start_index = max(0, min(int(job.get("candidate_index") or 0), len(candidates)))
         for candidate_index in range(start_index, len(candidates)):
             link = candidates[candidate_index]
             job["candidate_index"] = candidate_index
             job["active_candidate"] = link
+            job["last_candidate"] = link
+            job["speed_bps"] = 0
+            job["updated_at"] = int(time.time())
+            last_save["sample_t"] = time.time()
+            last_save["sample_bytes"] = 0
             self._save(job)
             info(f'[yt-dlp] ({candidate_index + 1}/{len(candidates)}) "{title}" via {link}')
             started = time.time()
@@ -329,7 +348,12 @@ class YtdlpWorker:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([link])
             except Exception as exc:
-                debug(f"[yt-dlp] candidate failed ({link}): {exc}")
+                last_error = f"{type(exc).__name__}: {exc}"
+                error(
+                    f'[yt-dlp] candidate failed for "{title}" via {link}: {last_error}',
+                    source="ytdlp",
+                    include_traceback=False,
+                )
                 # Les fragments d'un lecteur ne doivent pas être repris avec
                 # un autre. Tant que le processus redémarre sur le même index,
                 # ils sont conservés ; ils sont supprimés seulement à l'abandon.
@@ -339,6 +363,8 @@ class YtdlpWorker:
                 job["bytes_loaded"] = 0
                 job["eta"] = None
                 job["percent"] = 0
+                job["speed_bps"] = 0
+                job["updated_at"] = int(time.time())
                 self._save(job)
                 self._remove_partial_files(out_folder)
                 continue
@@ -360,6 +386,10 @@ class YtdlpWorker:
                 job["bytes_total"] = size
                 job["percent"] = 100
                 job["eta"] = 0
+                job["speed_bps"] = 0
+                job["average_speed_bps"] = int(size / elapsed)
+                job["completed_at"] = int(time.time())
+                job["updated_at"] = int(time.time())
                 job["error"] = ""
                 job["active_candidate"] = ""
                 self._save(job)
@@ -368,7 +398,10 @@ class YtdlpWorker:
                 return
 
         job["status"] = "failed"
-        job["error"] = "all embed candidates failed to download"
+        job["error"] = last_error or "all embed candidates failed to download"
+        job["speed_bps"] = 0
+        job["completed_at"] = int(time.time())
+        job["updated_at"] = int(time.time())
         _apply_ownership(out_folder, ownership)
         self._save(job)
         self._notify_status_change(job)

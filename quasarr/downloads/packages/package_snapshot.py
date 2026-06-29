@@ -23,6 +23,42 @@ def _format_eta(seconds: int) -> str:
     return f"{h:02}:{m:02}:{s:02}"
 
 
+def _ytdlp_slot(package_id, job, index=0):
+    status = job.get("status")
+    cat = job.get("category") or _cat_from_id(package_id)
+    title = job.get("title", "<unknown>")
+    if status in ("queued", "downloading"):
+        bytes_total = int(job.get("bytes_total") or 0)
+        bytes_loaded = int(job.get("bytes_loaded") or 0)
+        if bytes_total:
+            mb_total = int(bytes_total / (1024 * 1024))
+            mb_left = max(0, int((bytes_total - bytes_loaded) / (1024 * 1024)))
+        else:
+            mb_total = int(job.get("size_mb") or 0)
+            mb_left = mb_total
+        eta = job.get("eta")
+        timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
+        label = "Queued" if status == "queued" else "Downloading"
+        return "queue", {
+            "index": index, "nzo_id": package_id, "priority": "Normal",
+            "filename": f"[yt-dlp/{label}] {title}", "cat": cat,
+            "mbleft": mb_left, "mb": mb_total, "status": "Downloading",
+            "percentage": int(job.get("percent") or 0), "timeleft": timeleft,
+            "type": "ytdlp", "uuid": package_id,
+        }
+    if status in ("completed", "failed"):
+        err = job.get("error") if status == "failed" else ""
+        return "history", {
+            "fail_message": err or "", "category": cat,
+            "storage": job.get("storage", ""),
+            "status": "Failed" if status == "failed" else "Completed",
+            "nzo_id": package_id, "name": title,
+            "bytes": int(job.get("bytes_loaded") or 0),
+            "percentage": 100, "type": "ytdlp", "uuid": package_id,
+        }
+    return None, None
+
+
 class PackageSnapshotter:
     def __init__(self, shared_state, interval: int = POLL_INTERVAL_SECONDS):
         self.shared_state = shared_state
@@ -55,6 +91,41 @@ class PackageSnapshotter:
         """Réponse instantanée — retourne (snapshot, last_updated_epoch, last_error)."""
         with self._lock:
             return self._snapshot, self._last_updated, self._last_error
+
+    def update_ytdlp_job(self, job) -> None:
+        """Publie immédiatement un état AM sans interroger JDownloader."""
+        package_id = job.get("package_id")
+        if not package_id:
+            return
+        with self._lock:
+            snapshot = {
+                "queue": [slot for slot in self._snapshot.get("queue", [])
+                          if not (slot.get("type") == "ytdlp" and slot.get("nzo_id") == package_id)],
+                "history": [slot for slot in self._snapshot.get("history", [])
+                            if not (slot.get("type") == "ytdlp" and slot.get("nzo_id") == package_id)],
+            }
+            location, slot = _ytdlp_slot(package_id, job, len(snapshot["queue"]))
+            if location and slot:
+                snapshot[location].append(slot)
+            self._snapshot = snapshot
+            self._last_updated = time.time()
+
+    def refresh_ytdlp_jobs(self) -> None:
+        """Resynchronise uniquement les jobs locaux AM, immédiatement."""
+        from quasarr.downloads.ytdlp_worker import get_all_jobs
+
+        jobs = get_all_jobs(self.shared_state)
+        with self._lock:
+            snapshot = {
+                "queue": [slot for slot in self._snapshot.get("queue", []) if slot.get("type") != "ytdlp"],
+                "history": [slot for slot in self._snapshot.get("history", []) if slot.get("type") != "ytdlp"],
+            }
+            for package_id, job in jobs:
+                location, slot = _ytdlp_slot(package_id, job, len(snapshot["queue"]))
+                if location and slot:
+                    snapshot[location].append(slot)
+            self._snapshot = snapshot
+            self._last_updated = time.time()
 
     def force_refresh(self) -> None:
         """Optionnel: rafraîchir à la demande (non bloquant côté requête HTTP)."""
@@ -284,39 +355,12 @@ class PackageSnapshotter:
         try:
             from quasarr.downloads.ytdlp_worker import get_all_jobs
             for package_id, job in get_all_jobs(self.shared_state):
-                status = job.get("status")
-                cat = job.get("category") or _cat_from_id(package_id)
-                title = job.get("title", "<unknown>")
-                if status in ("queued", "downloading"):
-                    bytes_total = int(job.get("bytes_total") or 0)
-                    bytes_loaded = int(job.get("bytes_loaded") or 0)
-                    if bytes_total:
-                        mb_total_i = int(bytes_total / (1024 * 1024))
-                        mb_left_i = max(0, int((bytes_total - bytes_loaded) / (1024 * 1024)))
-                    else:
-                        mb_total_i = int(job.get("size_mb") or 0)
-                        mb_left_i = mb_total_i
-                    eta = job.get("eta")
-                    timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
-                    label = "Queued" if status == "queued" else "Downloading"
-                    downloads["queue"].append({
-                        "index": q_idx, "nzo_id": package_id, "priority": "Normal",
-                        "filename": f"[yt-dlp/{label}] {title}", "cat": cat,
-                        "mbleft": mb_left_i, "mb": mb_total_i, "status": "Downloading",
-                        "percentage": int(job.get("percent") or 0), "timeleft": timeleft,
-                        "type": "ytdlp", "uuid": package_id,
-                    })
+                location, slot = _ytdlp_slot(package_id, job, q_idx)
+                if location == "queue":
+                    downloads["queue"].append(slot)
                     q_idx += 1
-                elif status in ("completed", "failed"):
-                    err = job.get("error") if status == "failed" else ""
-                    downloads["history"].append({
-                        "fail_message": err or "", "category": cat,
-                        "storage": job.get("storage", ""),
-                        "status": "Failed" if status == "failed" else "Completed",
-                        "nzo_id": package_id, "name": title,
-                        "bytes": int(job.get("bytes_loaded") or 0),
-                        "percentage": 100, "type": "ytdlp", "uuid": package_id,
-                    })
+                elif location == "history":
+                    downloads["history"].append(slot)
                     h_idx += 1
         except Exception as exc:
             debug(f"[Snapshotter] yt-dlp jobs read failed: {exc}")

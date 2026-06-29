@@ -3,7 +3,10 @@ import os
 import sys
 from types import SimpleNamespace
 
+from quasarr.api.am_monitor import _job_payload, _monitor_page
 from quasarr.downloads import _package_id
+from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
+from quasarr.downloads.sources import am as download_am
 from quasarr.downloads.ytdlp_worker import (
     DEFAULT_OUTPUT_DIR,
     MAX_INTER_JOB_DELAY,
@@ -67,6 +70,29 @@ def test_default_output_and_random_delay_range():
     )
 
 
+def test_am_monitor_payload_exposes_live_metrics():
+    payload = _job_payload("pkg-live", {
+        "title": "Show.S01E01",
+        "status": "downloading",
+        "size_mb": 450,
+        "bytes_loaded": 100,
+        "bytes_total": 400,
+        "percent": 25,
+        "speed_bps": 50,
+        "eta": 6,
+        "active_candidate": "https://video.sibnet.ru/shell.php?videoid=1",
+        "candidates": ["https://video.sibnet.ru/shell.php?videoid=1"],
+    }, queue_position=None)
+
+    assert payload["player"] == "Sibnet"
+    assert payload["speed_bps"] == 50
+    assert payload["bytes_loaded"] == 100
+    assert payload["bytes_total"] == 400
+    assert payload["percent"] == 25
+    assert payload["eta"] == 6
+    assert "setInterval(refreshMonitor, 1000)" in _monitor_page()
+
+
 def test_am_page_load_uses_random_jitter(monkeypatch):
     waits = []
     calls = []
@@ -118,6 +144,56 @@ def test_enqueue_is_fifo_and_does_not_overwrite_active_job(monkeypatch):
     assert duplicate == first
     assert duplicate["candidates"] == ["https://one"]
     assert second["status"] == "queued"
+
+
+def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
+    snapshotter = PackageSnapshotter(FakeState())
+    job = {
+        "package_id": "pkg-fast",
+        "title": "Fast S01E01",
+        "status": "downloading",
+        "category": "tv",
+        "size_mb": 450,
+    }
+
+    snapshotter.update_ytdlp_job(job)
+    snapshot, _, _ = snapshotter.get()
+    assert snapshot["queue"][0]["nzo_id"] == "pkg-fast"
+
+    job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024)
+    snapshotter.update_ytdlp_job(job)
+    snapshot, _, _ = snapshotter.get()
+    assert snapshot["queue"] == []
+    assert snapshot["history"][0]["status"] == "Completed"
+    assert snapshot["history"][0]["storage"] == "/output/Fast.S01E01"
+
+
+def test_requested_am_player_has_enabled_fallbacks(monkeypatch):
+    response = SimpleNamespace(
+        text=(
+            'var eps1 = ["https://video.sibnet.ru/shell.php?videoid=1"];\n'
+            'var eps2 = ["https://sendvid.com/embed/abc"];'
+        ),
+        url="https://anime-sama.invalid/catalogue/show/saison1/vf/episodes.js",
+        raise_for_status=lambda: None,
+    )
+    config = SimpleNamespace(get=lambda _key: "anime-sama.invalid")
+    state = SimpleNamespace(values={"config": lambda _section: config, "user_agent": "test"})
+    monkeypatch.setattr(download_am, "_am_request", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(download_am, "_update_hostname", lambda *_args: "anime-sama.invalid")
+    monkeypatch.setattr(download_am, "is_player_enabled", lambda *_args: True)
+
+    links = download_am.get_am_download_links(
+        state,
+        "https://anime-sama.invalid/catalogue/show/saison1/vf/#episode=1&player=Sibnet",
+        None,
+        "Show.S01E01",
+    )
+
+    assert links == [
+        "https://video.sibnet.ru/shell.php?videoid=1",
+        "https://sendvid.com/embed/abc",
+    ]
 
 
 def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
