@@ -479,6 +479,7 @@ class YtdlpWorker:
 
         job["status"] = "failed"
         job["error"] = last_error or "Requested anime-sama player failed to produce a file"
+        job["storage"] = out_folder
         job["speed_bps"] = 0
         job["completed_at"] = int(time.time())
         job["updated_at"] = int(time.time())
