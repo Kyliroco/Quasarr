@@ -27,7 +27,8 @@ def _ytdlp_slot(package_id, job, index=0):
     status = job.get("status")
     cat = job.get("category") or _cat_from_id(package_id)
     title = job.get("title", "<unknown>")
-    if status in ("queued", "downloading"):
+    terminal_waiting_for_queue_ack = status in ("completed", "failed") and not job.get("queue_seen", False)
+    if status in ("queued", "downloading") or terminal_waiting_for_queue_ack:
         bytes_total = int(job.get("bytes_total") or 0)
         bytes_loaded = int(job.get("bytes_loaded") or 0)
         if bytes_total:
@@ -36,14 +37,20 @@ def _ytdlp_slot(package_id, job, index=0):
         else:
             mb_total = int(job.get("size_mb") or 0)
             mb_left = mb_total
-        eta = job.get("eta")
-        timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
-        label = "Queued" if status == "queued" else "Downloading"
+        if terminal_waiting_for_queue_ack:
+            mb_left = 0
+            timeleft = "00:00:00"
+            label = "Completed" if status == "completed" else "Failed"
+        else:
+            eta = job.get("eta")
+            timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
+            label = "Queued" if status == "queued" else "Downloading"
         return "queue", {
             "index": index, "nzo_id": package_id, "priority": "Normal",
             "filename": f"[yt-dlp/{label}] {title}", "cat": cat,
             "mbleft": mb_left, "mb": mb_total, "status": "Downloading",
-            "percentage": int(job.get("percent") or 0), "timeleft": timeleft,
+            "percentage": 100 if terminal_waiting_for_queue_ack else int(job.get("percent") or 0),
+            "timeleft": timeleft,
             "type": "ytdlp", "uuid": package_id,
         }
     if status in ("completed", "failed"):
