@@ -14,6 +14,8 @@ def _job_payload(package_id, job, queue_position=None):
     selected_candidate = active_candidate
     if not selected_candidate and 0 <= candidate_index < len(candidates):
         selected_candidate = candidates[candidate_index]
+    if not selected_candidate and candidates:
+        selected_candidate = candidates[min(max(candidate_index, 0), len(candidates) - 1)]
 
     bytes_total = int(job.get("bytes_total") or 0)
     estimated_bytes = int(job.get("size_mb") or 0) * 1024 * 1024
@@ -73,8 +75,8 @@ def _monitor_page():
         <h3>Waiting queue</h3>
         <div class="table-scroll">
           <table class="monitor-table">
-            <thead><tr><th>#</th><th>Release</th><th>Player</th><th>Estimated size</th><th>Added</th></tr></thead>
-            <tbody id="queue-body"><tr><td colspan="5" class="empty-cell">Queue is empty.</td></tr></tbody>
+            <thead><tr><th>#</th><th>Release</th><th>Player</th><th>Download link</th><th>Estimated size</th><th>Added</th></tr></thead>
+            <tbody id="queue-body"><tr><td colspan="6" class="empty-cell">Queue is empty.</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -83,8 +85,8 @@ def _monitor_page():
         <h3>Recent history</h3>
         <div class="table-scroll">
           <table class="monitor-table">
-            <thead><tr><th>Status</th><th>Release</th><th>Player</th><th>Size</th><th>Average speed</th></tr></thead>
-            <tbody id="history-body"><tr><td colspan="5" class="empty-cell">No history yet.</td></tr></tbody>
+            <thead><tr><th>Status</th><th>Release</th><th>Player</th><th>Download link</th><th>Size</th><th>Average speed / error</th></tr></thead>
+            <tbody id="history-body"><tr><td colspan="6" class="empty-cell">No history yet.</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -113,6 +115,9 @@ def _monitor_page():
       .metric strong { font-size:1rem; }
       .candidate-line, .error-line { margin-top:.8rem; font-size:.875rem; overflow-wrap:anywhere; }
       .candidate-line { color:var(--secondary); }
+      .source-cell { min-width:230px; max-width:320px; }
+      .source-cell a { display:block; font-weight:600; }
+      .source-url { display:block; color:var(--secondary); font-size:.75rem; overflow-wrap:anywhere; line-height:1.35; }
       .error-line { color:#dc3545; }
       .table-scroll { overflow-x:auto; }
       .monitor-table { width:100%; border-collapse:collapse; }
@@ -156,6 +161,20 @@ def _monitor_page():
         return epoch ? new Date(epoch * 1000).toLocaleString() : '—';
       }
 
+      function sourceLink(value, label) {
+        if (!value) return '—';
+        try {
+          const url = new URL(value);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return esc(value);
+          return `<span class="source-cell">
+            <a href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">${esc(label || 'Open link')} ↗</a>
+            <span class="source-url">${esc(url.href)}</span>
+          </span>`;
+        } catch (_) {
+          return esc(value);
+        }
+      }
+
       function renderActive(job) {
         const target = document.getElementById('active-job');
         if (!job) {
@@ -179,19 +198,20 @@ def _monitor_page():
             <div class="metric"><span>ETA</span><strong>${duration(job.eta)}</strong></div>
             <div class="metric"><span>Started</span><strong>${dateTime(job.started_at)}</strong></div>
           </div>
-          <div class="candidate-line">Source ${job.candidate_index + 1}/${job.candidate_count}: ${esc(job.candidate)}</div>`;
+          <div class="candidate-line">Source ${job.candidate_index + 1}/${job.candidate_count}: ${sourceLink(job.candidate, 'Open download link')}</div>`;
       }
 
       function renderQueue(jobs) {
         const body = document.getElementById('queue-body');
         if (!jobs.length) {
-          body.innerHTML = '<tr><td colspan="5" class="empty-cell">Queue is empty.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="empty-cell">Queue is empty.</td></tr>';
           return;
         }
         body.innerHTML = jobs.map(job => `<tr>
           <td>${job.queue_position}</td>
           <td class="release-cell">${esc(job.title)}</td>
           <td>${esc(job.player)}</td>
+          <td>${sourceLink(job.candidate, 'Open')}</td>
           <td>${bytes(job.estimated_bytes)}</td>
           <td>${dateTime(job.added_at)}</td>
         </tr>`).join('');
@@ -200,13 +220,14 @@ def _monitor_page():
       function renderHistory(jobs) {
         const body = document.getElementById('history-body');
         if (!jobs.length) {
-          body.innerHTML = '<tr><td colspan="5" class="empty-cell">No history yet.</td></tr>';
+          body.innerHTML = '<tr><td colspan="6" class="empty-cell">No history yet.</td></tr>';
           return;
         }
         body.innerHTML = jobs.slice(0, 10).map(job => `<tr title="${esc(job.error)}">
           <td class="${job.status === 'completed' ? 'ok' : 'failed'}">${job.status === 'completed' ? 'Completed' : 'Failed'}</td>
           <td class="release-cell">${esc(job.title)}</td>
           <td>${esc(job.player)}</td>
+          <td>${sourceLink(job.candidate, 'Open')}</td>
           <td>${bytes(job.bytes_loaded || job.estimated_bytes)}</td>
           <td>${job.status === 'completed' ? bytes(job.average_speed_bps) + '/s' : esc(job.error || '—')}</td>
         </tr>`).join('');

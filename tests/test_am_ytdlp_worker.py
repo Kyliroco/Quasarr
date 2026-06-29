@@ -90,7 +90,18 @@ def test_am_monitor_payload_exposes_live_metrics():
     assert payload["bytes_total"] == 400
     assert payload["percent"] == 25
     assert payload["eta"] == 6
-    assert "setInterval(refreshMonitor, 1000)" in _monitor_page()
+    page = _monitor_page()
+    assert "setInterval(refreshMonitor, 1000)" in page
+    assert "Open download link" in page
+    assert 'rel="noopener noreferrer"' in page
+
+    legacy_failed = _job_payload("pkg-failed", {
+        "title": "Show.S01E02",
+        "status": "failed",
+        "candidate_index": 1,
+        "candidates": ["https://vidmoly.to/embed-demo.html"],
+    })
+    assert legacy_failed["candidate"] == "https://vidmoly.to/embed-demo.html"
 
 
 def test_am_page_load_uses_random_jitter(monkeypatch):
