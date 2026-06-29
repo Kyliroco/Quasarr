@@ -335,10 +335,12 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     assert resumed["status"] == "queued"
     assert resumed["candidate_index"] == 1
 
-    folder = tmp_path / "Show.S01E02"
-    folder.mkdir()
-    partial = folder / "Show.S01E02.mp4.part"
+    legacy_folder = tmp_path / "Show.S01E02"
+    legacy_folder.mkdir()
+    partial = legacy_folder / "Show.S01E02.mp4.part"
     partial.write_bytes(b"already downloaded")
+    unrelated = tmp_path / "Another.Show.S01E01.mp4"
+    unrelated.write_bytes(b"unrelated and deliberately larger")
     calls = []
 
     class FakeYoutubeDL:
@@ -354,7 +356,8 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
 
         def download(self, links):
             assert links == ["https://resume.invalid/video"]
-            assert partial.exists()
+            assert not partial.exists()
+            assert (tmp_path / "Show.S01E02.mp4.part").exists()
             final = self.options["outtmpl"].replace("%(ext)s", "mp4")
             with open(final, "wb") as stream:
                 stream.write(b"complete file")
@@ -365,7 +368,9 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     completed = json.loads(state.db.retrieve("pkg-resume"))
     assert completed["status"] == "completed"
     assert completed["candidate_index"] == 1
-    assert completed["storage"] == os.fspath(folder)
+    assert completed["storage"] == os.fspath(tmp_path / "Show.S01E02.mp4")
+    assert not legacy_folder.exists()
+    assert unrelated.exists()
     assert calls[0]["continuedl"] is True
     assert calls[0]["nopart"] is False
     assert calls[0]["overwrites"] is False

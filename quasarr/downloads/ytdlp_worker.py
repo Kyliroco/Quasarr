@@ -266,8 +266,13 @@ class YtdlpWorker:
             return
         for _package_id, job in get_all_jobs(self.shared_state):
             safe_name = self.shared_state.sanitize_title(job.get("title", "")) or "download"
-            folder = job.get("storage") or os.path.join(output_dir, safe_name)
-            _apply_ownership(folder, ownership)
+            storage = job.get("storage")
+            if storage:
+                _apply_ownership(storage, ownership)
+            # Compatibilité avec les anciens jobs rangés dans un sous-dossier.
+            _apply_ownership(os.path.join(output_dir, safe_name), ownership)
+            for path in self._matching_output_files(output_dir, safe_name):
+                _apply_ownership(path, ownership)
 
     # ---------- Persistance ----------
 
@@ -317,16 +322,16 @@ class YtdlpWorker:
         safe_name = self.shared_state.sanitize_title(title) or "download"
         output_dir = get_output_dir(self.shared_state)
         ownership = _nearest_ownership(output_dir)
-        out_folder = os.path.join(output_dir, safe_name)
+        output_prefix = os.path.join(output_dir, safe_name)
         try:
-            os.makedirs(out_folder, exist_ok=True)
-            _apply_ownership(out_folder, ownership)
+            os.makedirs(output_dir, exist_ok=True)
+            self._migrate_legacy_output(output_dir, safe_name)
         except Exception as exc:
             job["status"] = "failed"
-            job["error"] = f"cannot create output folder: {exc}"
+            job["error"] = f"cannot create output directory: {exc}"
             self._save(job)
             self._notify_status_change(job)
-            error(f'[yt-dlp] cannot create "{out_folder}": {exc}')
+            error(f'[yt-dlp] cannot create "{output_dir}": {exc}')
             return
 
         last_save = {"t": 0.0, "sample_t": time.time(), "sample_bytes": 0}
@@ -357,7 +362,7 @@ class YtdlpWorker:
                     self._save(job)
 
         ydl_opts = {
-            "outtmpl": os.path.join(out_folder, safe_name + ".%(ext)s"),
+            "outtmpl": output_prefix + ".%(ext)s",
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
@@ -446,22 +451,25 @@ class YtdlpWorker:
                 job["speed_bps"] = 0
                 job["updated_at"] = int(time.time())
                 self._save(job)
-                self._remove_partial_files(out_folder)
+                self._remove_partial_files(output_dir, safe_name)
                 continue
 
-            downloaded = self._largest_file(out_folder)
+            downloaded = self._largest_file(output_dir, safe_name)
             if downloaded:
                 size = os.path.getsize(downloaded)
                 # Sonarr ne voit le job terminé qu'après correction de tous les
                 # fichiers créés par le processus Docker root.
-                _apply_ownership(out_folder, ownership)
+                _apply_ownership(downloaded, ownership)
                 elapsed = max(0.001, time.time() - started)
                 try:
                     record_player_speed(self.shared_state, _host_tag(link), size / elapsed)
                 except Exception as exc:
                     debug(f"[yt-dlp] could not record speed: {exc}")
                 job["status"] = "completed"
-                job["storage"] = out_folder
+                # Sonarr sait importer un chemin de fichier. Cela permet de
+                # garder tous les médias directement à la racine de /output
+                # sans lui faire analyser les autres téléchargements présents.
+                job["storage"] = downloaded
                 job["bytes_loaded"] = size
                 job["bytes_total"] = size
                 job["percent"] = 100
@@ -479,39 +487,68 @@ class YtdlpWorker:
 
         job["status"] = "failed"
         job["error"] = last_error or "Requested anime-sama player failed to produce a file"
-        job["storage"] = out_folder
+        job["storage"] = output_prefix
         job["speed_bps"] = 0
         job["completed_at"] = int(time.time())
         job["updated_at"] = int(time.time())
-        _apply_ownership(out_folder, ownership)
+        for path in self._matching_output_files(output_dir, safe_name):
+            _apply_ownership(path, ownership)
         self._save(job)
         self._notify_status_change(job)
         info(f'[yt-dlp] failed "{title}" (no working candidate)')
 
     @staticmethod
-    def _largest_file(folder):
+    def _matching_output_files(folder, safe_name):
+        prefix = safe_name + "."
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        return [
+            os.path.join(folder, name)
+            for name in names
+            if name.startswith(prefix) and os.path.isfile(os.path.join(folder, name))
+        ]
+
+    @classmethod
+    def _migrate_legacy_output(cls, output_dir, safe_name):
+        """Déplace les anciens fichiers du sous-dossier vers la sortie plate."""
+        legacy_folder = os.path.join(output_dir, safe_name)
+        if not os.path.isdir(legacy_folder):
+            return
+        for source in cls._matching_output_files(legacy_folder, safe_name):
+            destination = os.path.join(output_dir, os.path.basename(source))
+            if not os.path.exists(destination):
+                os.replace(source, destination)
+        try:
+            os.rmdir(legacy_folder)
+        except OSError:
+            # Le dossier peut contenir un ancien artefact non lié au média ;
+            # on ne le supprime alors jamais de force.
+            pass
+
+    @classmethod
+    def _largest_file(cls, folder, safe_name):
         best = None
         best_size = -1
-        for root, _dirs, files in os.walk(folder):
-            for name in files:
-                if name.endswith(".part") or name.endswith(".ytdl"):
-                    continue
-                path = os.path.join(root, name)
-                try:
-                    size = os.path.getsize(path)
-                except OSError:
-                    continue
-                if size > best_size:
-                    best, best_size = path, size
+        for path in cls._matching_output_files(folder, safe_name):
+            if path.endswith(".part") or path.endswith(".ytdl") or ".part-" in path:
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if size > best_size:
+                best, best_size = path, size
         return best
 
-    @staticmethod
-    def _remove_partial_files(folder):
-        for root, _dirs, files in os.walk(folder):
-            for name in files:
-                if not (name.endswith(".part") or name.endswith(".ytdl")):
-                    continue
-                try:
-                    os.remove(os.path.join(root, name))
-                except OSError:
-                    pass
+    @classmethod
+    def _remove_partial_files(cls, folder, safe_name):
+        for path in cls._matching_output_files(folder, safe_name):
+            name = os.path.basename(path)
+            if not (name.endswith(".part") or name.endswith(".ytdl") or ".part-" in name):
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                pass
