@@ -156,7 +156,7 @@ def handle_am(shared_state, title, password, package_id, imdb_id, url, mirror, s
              reason=f'No playable anime-sama embed for "{title}" - "{url}"')
         return {"success": False, "title": title}
 
-    enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb)
+    enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, source_url=url)
     send_discord_message(shared_state, title=title, case="unprotected", imdb_id=imdb_id, source=url)
     return {"success": True, "title": title}
 
