@@ -11,8 +11,11 @@ on renvoie la liste ordonnée des embeds jouables (lecteur 1, lecteur 2, …),
 hôtes bloqués retirés. Le worker yt-dlp essaiera chaque candidat dans l'ordre.
 """
 
+import html
 import re
-from urllib.parse import urlparse
+import threading
+import time
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from quasarr.providers.log import debug, log_event
 from quasarr.providers.players import is_player_enabled
@@ -27,6 +30,100 @@ from quasarr.search.sources.am import (
 )
 
 hostname = "am"
+
+_REWRITE_CACHE = {}
+_REWRITE_CACHE_LOCK = threading.Lock()
+_REWRITE_CACHE_TTL = 15 * 60
+
+
+def _parse_iframe_rewrite_rules(script):
+    """Extrait les ``url.replace(/…/, '…')`` utilisés par le setter d'iframe."""
+    iframe_marker = script.find("HTMLIFrameElement.prototype")
+    if iframe_marker < 0:
+        return []
+    iframe_code = script[iframe_marker:]
+    used_functions = set(re.findall(r"\b([A-Za-z_$][\w$]*)\(\s*(?:value|src)\s*\)", iframe_code))
+    rules = []
+    function_pattern = re.compile(
+        r"function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{(.*?)\n\s*\}",
+        re.S,
+    )
+    for function_match in function_pattern.finditer(script):
+        function_name, argument, body = function_match.groups()
+        if function_name not in used_functions:
+            continue
+        replace_match = re.search(
+            rf"return\s+{re.escape(argument)}\.replace\(\s*/((?:\\.|[^/])*)/([a-z]*)\s*,\s*"
+            r"(['\"])(.*?)\3\s*\)",
+            body,
+            re.S,
+        )
+        if not replace_match:
+            continue
+        pattern, flags, _quote, replacement = replace_match.groups()
+        pattern = pattern.replace(r"\/", "/")
+        replacement = re.sub(r"\$(\d+)", r"\\g<\1>", replacement).replace("$$", "$")
+        python_flags = re.I if "i" in flags else 0
+        try:
+            compiled = re.compile(pattern, python_flags)
+        except re.error:
+            continue
+        rules.append((compiled, replacement, 0 if "g" in flags else 1))
+    return rules
+
+
+def _apply_rewrite_rules(urls, rules):
+    rewritten = []
+    for url in urls:
+        result = url
+        for pattern, replacement, count in rules:
+            result = pattern.sub(replacement, result, count=count)
+        rewritten.append(result)
+    return rewritten
+
+
+def _site_iframe_rewrite_rules(shared_state, source_url, headers):
+    """Charge les règles réellement déclarées par le script vidéo anime-sama."""
+    parsed = urlparse(source_url)
+    cache_key = parsed.netloc.lower()
+    now = time.time()
+    with _REWRITE_CACHE_LOCK:
+        cached = _REWRITE_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+
+    page_url = urlunparse(parsed._replace(fragment=""))
+    try:
+        page_response = _am_request("GET", page_url, headers=headers, timeout=15)
+        page_response.raise_for_status()
+        script_match = re.search(
+            r"<script[^>]+src\s*=\s*(['\"])([^'\"]*script_videos[^'\"]*)\1",
+            page_response.text,
+            re.I,
+        )
+        if not script_match:
+            return []
+        script_url = urljoin(page_response.url, html.unescape(script_match.group(2)))
+        script_response = _am_request("GET", script_url, headers=headers, timeout=15)
+        script_response.raise_for_status()
+        rules = _parse_iframe_rewrite_rules(script_response.text)
+    except Exception as exc:
+        debug(f"{hostname.upper()} could not load iframe rewrite rules: {exc}")
+        return []
+
+    with _REWRITE_CACHE_LOCK:
+        _REWRITE_CACHE[cache_key] = (now + _REWRITE_CACHE_TTL, rules)
+    return rules
+
+
+def _apply_site_iframe_rewrites(shared_state, source_url, headers, candidates):
+    rules = _site_iframe_rewrite_rules(shared_state, source_url, headers)
+    rewritten = _apply_rewrite_rules(candidates, rules)
+    for original, resolved in zip(candidates, rewritten):
+        if original != resolved:
+            log_event("player_url_rewritten", source="am-dl", level="INFO",
+                      original=original, resolved=resolved)
+    return rewritten
 
 
 def _parse_source_url(url):
@@ -106,6 +203,7 @@ def get_am_download_links(shared_state, url, mirror, title):
 
     eps_map = _parse_episodes_js(response.text)
     candidates = _candidates_for_index(eps_map, episode - 1)
+    candidates = _apply_site_iframe_rewrites(shared_state, url, headers, candidates)
     if not candidates:
         log_event("download_skipped", source="am-dl", level="WARNING",
                   title=title, reason="no playable embed for episode",

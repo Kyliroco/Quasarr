@@ -90,7 +90,18 @@ def test_am_monitor_payload_exposes_live_metrics():
     assert payload["bytes_total"] == 400
     assert payload["percent"] == 25
     assert payload["eta"] == 6
-    assert "setInterval(refreshMonitor, 1000)" in _monitor_page()
+    page = _monitor_page()
+    assert "setInterval(refreshMonitor, 1000)" in page
+    assert "Open download link" in page
+    assert 'rel="noopener noreferrer"' in page
+
+    legacy_failed = _job_payload("pkg-failed", {
+        "title": "Show.S01E02",
+        "status": "failed",
+        "candidate_index": 1,
+        "candidates": ["https://vidmoly.to/embed-demo.html"],
+    })
+    assert legacy_failed["candidate"] == "https://vidmoly.to/embed-demo.html"
 
 
 def test_am_page_load_uses_random_jitter(monkeypatch):
@@ -215,6 +226,32 @@ def test_requested_am_player_is_the_only_download_candidate(monkeypatch):
     assert links == [
         "https://video.sibnet.ru/shell.php?videoid=1",
     ]
+
+
+def test_iframe_rewrite_rules_are_read_from_anime_sama_player_script():
+    script = r'''
+    function replacePlayerHost(url) {
+      return url.replace(/vidmoly\.(to|net)/g, 'vidmoly.biz');
+    }
+    function unrelated(text) {
+      return text.replace(/foo/g, 'bar');
+    }
+    const proto = HTMLIFrameElement.prototype;
+    Object.defineProperty(proto, 'src', {
+      set: function(value) {
+        const newVal = replacePlayerHost(value);
+        return descriptor.set.call(this, newVal);
+      }
+    });
+    '''
+
+    rules = download_am._parse_iframe_rewrite_rules(script)
+    rewritten = download_am._apply_rewrite_rules(
+        ["https://vidmoly.to/embed-wt261mi07b0z.html"], rules
+    )
+
+    assert len(rules) == 1
+    assert rewritten == ["https://vidmoly.biz/embed-wt261mi07b0z.html"]
 
 
 def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
