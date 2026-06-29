@@ -3,6 +3,7 @@ import os
 import sys
 from types import SimpleNamespace
 
+from quasarr.api.am_monitor import _job_payload, _monitor_page
 from quasarr.downloads import _package_id
 from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
 from quasarr.downloads.sources import am as download_am
@@ -67,6 +68,29 @@ def test_default_output_and_random_delay_range():
     assert _package_id("tv", "Show S01E01", "https://example/video") == (
         "SABnzbd_tv_75c33c029cc120c489f5f9a3"
     )
+
+
+def test_am_monitor_payload_exposes_live_metrics():
+    payload = _job_payload("pkg-live", {
+        "title": "Show.S01E01",
+        "status": "downloading",
+        "size_mb": 450,
+        "bytes_loaded": 100,
+        "bytes_total": 400,
+        "percent": 25,
+        "speed_bps": 50,
+        "eta": 6,
+        "active_candidate": "https://video.sibnet.ru/shell.php?videoid=1",
+        "candidates": ["https://video.sibnet.ru/shell.php?videoid=1"],
+    }, queue_position=None)
+
+    assert payload["player"] == "Sibnet"
+    assert payload["speed_bps"] == 50
+    assert payload["bytes_loaded"] == 100
+    assert payload["bytes_total"] == 400
+    assert payload["percent"] == 25
+    assert payload["eta"] == 6
+    assert "setInterval(refreshMonitor, 1000)" in _monitor_page()
 
 
 def test_am_page_load_uses_random_jitter(monkeypatch):

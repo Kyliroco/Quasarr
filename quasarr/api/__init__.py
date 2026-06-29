@@ -5,6 +5,7 @@
 from bottle import Bottle
 
 import quasarr.providers.html_images as images
+from quasarr.api.am_monitor import setup_am_monitor
 from quasarr.api.arr import setup_arr_routes
 from quasarr.api.captcha import setup_captcha_routes
 from quasarr.api.config import setup_config
@@ -32,6 +33,7 @@ def get_api(shared_state_dict, shared_state_lock):
     ).start()
     app.config['ytdlp_worker'] = ytdlp_worker
     setup_arr_routes(app)
+    setup_am_monitor(app, shared_state)
     setup_captcha_routes(app)
     setup_config(app, shared_state)
     setup_statistics(app, shared_state)
@@ -116,6 +118,7 @@ def get_api(shared_state_dict, shared_state_lock):
             <p><button class="btn-primary" onclick="location.href='/hostnames'">Update Hostnames</button></p>
             <p><button class="btn-primary" onclick="location.href='/ytdlp'">yt-dlp Download Folder</button></p>
             <p><button class="btn-primary" onclick="location.href='/players'">anime-sama Players</button></p>
+            <p><button class="btn-primary" onclick="location.href='/am-downloads'">anime-sama Downloads</button></p>
             <p><button class="btn-primary" onclick="location.href='/statistics'">View Statistics</button></p>
             <p><button class="btn-primary" onclick="location.href='/debug/'">Debug Dashboard</button></p>
         </div>
