@@ -158,7 +158,8 @@ def test_enqueue_is_fifo_and_does_not_overwrite_active_job(monkeypatch):
 
 
 def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
-    snapshotter = PackageSnapshotter(FakeState())
+    state = FakeState()
+    snapshotter = PackageSnapshotter(state)
     job = {
         "package_id": "pkg-fast",
         "title": "Fast S01E01",
@@ -167,11 +168,13 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
         "size_mb": 450,
     }
 
+    state.db.update_store("pkg-fast", json.dumps(job))
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
     assert snapshot["queue"][0]["nzo_id"] == "pkg-fast"
 
     job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024)
+    state.db.update_store("pkg-fast", json.dumps(job))
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
     assert snapshot["queue"] == []
@@ -179,10 +182,34 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     assert snapshot["history"][0]["storage"] == "/output/Fast.S01E01"
 
     job.update(status="failed", error="DownloadError: HTTP Error 403", storage="")
+    state.db.update_store("pkg-fast", json.dumps(job))
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
     assert snapshot["history"][0]["status"] == "Failed"
     assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403"
+
+
+def test_sonarr_snapshot_always_overlays_latest_persisted_am_state():
+    state = FakeState()
+    job = enqueue_job(state, "pkg-instant", "Instant.S01E01", ["https://one"], "tt1", 450)
+    job.update({
+        "status": "completed",
+        "storage": "/output/Instant.S01E01",
+        "bytes_loaded": 2048,
+        "bytes_total": 2048,
+        "percent": 100,
+    })
+    state.db.update_store("pkg-instant", json.dumps(job))
+    snapshotter = PackageSnapshotter(state)
+    # Simule un ancien refresh JDownloader ayant publié un cache sans le job AM.
+    snapshotter._snapshot = {"queue": [], "history": []}
+
+    snapshot, _, _ = snapshotter.get()
+
+    assert snapshot["queue"] == []
+    assert snapshot["history"][0]["nzo_id"] == "pkg-instant"
+    assert snapshot["history"][0]["status"] == "Completed"
+    assert snapshot["history"][0]["storage"] == "/output/Instant.S01E01"
 
 
 def test_legacy_fallback_jobs_are_migrated_to_one_player():
