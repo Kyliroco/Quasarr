@@ -217,6 +217,32 @@ def test_requested_am_player_is_the_only_download_candidate(monkeypatch):
     ]
 
 
+def test_iframe_rewrite_rules_are_read_from_anime_sama_player_script():
+    script = r'''
+    function replacePlayerHost(url) {
+      return url.replace(/vidmoly\.(to|net)/g, 'vidmoly.biz');
+    }
+    function unrelated(text) {
+      return text.replace(/foo/g, 'bar');
+    }
+    const proto = HTMLIFrameElement.prototype;
+    Object.defineProperty(proto, 'src', {
+      set: function(value) {
+        const newVal = replacePlayerHost(value);
+        return descriptor.set.call(this, newVal);
+      }
+    });
+    '''
+
+    rules = download_am._parse_iframe_rewrite_rules(script)
+    rewritten = download_am._apply_rewrite_rules(
+        ["https://vidmoly.to/embed-wt261mi07b0z.html"], rules
+    )
+
+    assert len(rules) == 1
+    assert rewritten == ["https://vidmoly.biz/embed-wt261mi07b0z.html"]
+
+
 def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     state = FakeState(str(tmp_path))
     job = enqueue_job(
