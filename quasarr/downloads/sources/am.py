@@ -121,10 +121,17 @@ def get_am_download_links(shared_state, url, mirror, title):
             return []
         chosen = _select_candidate(candidates, player)
         if chosen:
+            fallbacks = [
+                candidate for candidate in candidates
+                if candidate != chosen and is_player_enabled(shared_state, _host_tag(candidate))
+            ]
             log_event("download_resolved", source="am-dl", level="INFO",
                       title=title, episode=episode, player=player,
-                      host=urlparse(chosen).netloc)
-            return [chosen]
+                      host=urlparse(chosen).netloc, fallbacks=len(fallbacks))
+            # Le lecteur choisi reste prioritaire. Si yt-dlp le refuse, le
+            # worker essaie les autres lecteurs actifs sans attendre un nouveau
+            # cycle de recherche Sonarr.
+            return [chosen, *fallbacks]
         log_event("download_skipped", source="am-dl", level="WARNING",
                   title=title, reason="requested player not available",
                   player=player, available=len(candidates), url=episodes_url)

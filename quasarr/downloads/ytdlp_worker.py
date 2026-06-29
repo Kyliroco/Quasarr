@@ -317,6 +317,7 @@ class YtdlpWorker:
         from quasarr.search.sources.am import _host_tag
 
         candidates = job.get("candidates", [])
+        last_error = ""
         start_index = max(0, min(int(job.get("candidate_index") or 0), len(candidates)))
         for candidate_index in range(start_index, len(candidates)):
             link = candidates[candidate_index]
@@ -329,7 +330,12 @@ class YtdlpWorker:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([link])
             except Exception as exc:
-                debug(f"[yt-dlp] candidate failed ({link}): {exc}")
+                last_error = f"{type(exc).__name__}: {exc}"
+                error(
+                    f'[yt-dlp] candidate failed for "{title}" via {link}: {last_error}',
+                    source="ytdlp",
+                    include_traceback=False,
+                )
                 # Les fragments d'un lecteur ne doivent pas être repris avec
                 # un autre. Tant que le processus redémarre sur le même index,
                 # ils sont conservés ; ils sont supprimés seulement à l'abandon.
@@ -368,7 +374,7 @@ class YtdlpWorker:
                 return
 
         job["status"] = "failed"
-        job["error"] = "all embed candidates failed to download"
+        job["error"] = last_error or "all embed candidates failed to download"
         _apply_ownership(out_folder, ownership)
         self._save(job)
         self._notify_status_change(job)

@@ -152,6 +152,7 @@ def setup_arr_routes(app):
             except KeyError:
                 error(f'Failed to download "{title}" - no package_id returned', source="api")
         snap = request.app.config['snapshotter']
+        snap.refresh_ytdlp_jobs()
         threading.Thread(target=snap.force_refresh, daemon=True).start()
         return {
             "status": True,
@@ -266,6 +267,7 @@ def setup_arr_routes(app):
                         imdb_id or None,
                     )
                     snap = request.app.config['snapshotter']
+                    snap.refresh_ytdlp_jobs()
                     threading.Thread(target=snap.force_refresh, daemon=True).start()
                     try:
                         success = downloaded["success"]
