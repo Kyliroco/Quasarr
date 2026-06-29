@@ -167,6 +167,7 @@ class YtdlpWorker:
     def start(self):
         if self._thread and self._thread.is_alive():
             return self
+        self._migrate_legacy_jobs()
         self._reset_orphans()
         self._repair_existing_ownership()
         self._stop.clear()
@@ -207,6 +208,29 @@ class YtdlpWorker:
                 job["status"] = "queued"
                 job["resumed"] = True
                 self._save(job)
+
+    def _migrate_legacy_jobs(self):
+        """Rétablit la règle stricte « une release = un seul lecteur »."""
+        legacy_error = "all embed candidates failed to download"
+        for _package_id, job in get_all_jobs(self.shared_state):
+            changed = False
+            candidates = list(job.get("candidates") or [])
+            if job.get("status") in {"queued", "downloading"} and len(candidates) > 1:
+                job["candidates"] = candidates[:1]
+                changed = True
+                if int(job.get("candidate_index") or 0) > 0:
+                    job["status"] = "failed"
+                    job["error"] = (
+                        job.get("last_error")
+                        or "Requested anime-sama player failed (legacy job; exact error unavailable)"
+                    )
+                    job["completed_at"] = int(time.time())
+            if job.get("status") == "failed" and job.get("error") == legacy_error:
+                job["error"] = "Requested anime-sama player failed (legacy job; exact error unavailable)"
+                changed = True
+            if changed:
+                self._save(job)
+                self._notify_status_change(job)
 
     def _next_queued(self):
         for _package_id, job in get_all_jobs(self.shared_state):
@@ -349,6 +373,7 @@ class YtdlpWorker:
                     ydl.download([link])
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+                job["last_error"] = last_error
                 error(
                     f'[yt-dlp] candidate failed for "{title}" via {link}: {last_error}',
                     source="ytdlp",
@@ -398,7 +423,7 @@ class YtdlpWorker:
                 return
 
         job["status"] = "failed"
-        job["error"] = last_error or "all embed candidates failed to download"
+        job["error"] = last_error or "Requested anime-sama player failed to produce a file"
         job["speed_bps"] = 0
         job["completed_at"] = int(time.time())
         job["updated_at"] = int(time.time())

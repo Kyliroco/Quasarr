@@ -167,8 +167,30 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     assert snapshot["history"][0]["status"] == "Completed"
     assert snapshot["history"][0]["storage"] == "/output/Fast.S01E01"
 
+    job.update(status="failed", error="DownloadError: HTTP Error 403", storage="")
+    snapshotter.update_ytdlp_job(job)
+    snapshot, _, _ = snapshotter.get()
+    assert snapshot["history"][0]["status"] == "Failed"
+    assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403"
 
-def test_requested_am_player_has_enabled_fallbacks(monkeypatch):
+
+def test_legacy_fallback_jobs_are_migrated_to_one_player():
+    state = FakeState()
+    legacy = enqueue_job(state, "pkg-legacy", "Episode", ["https://one", "https://two"], "tt1", 450)
+    legacy["status"] = "downloading"
+    legacy["candidate_index"] = 1
+    legacy["error"] = "all embed candidates failed to download"
+    state.db.update_store("pkg-legacy", json.dumps(legacy))
+
+    YtdlpWorker(state)._migrate_legacy_jobs()
+    migrated = json.loads(state.db.retrieve("pkg-legacy"))
+
+    assert migrated["candidates"] == ["https://one"]
+    assert migrated["status"] == "failed"
+    assert migrated["error"] == "Requested anime-sama player failed (legacy job; exact error unavailable)"
+
+
+def test_requested_am_player_is_the_only_download_candidate(monkeypatch):
     response = SimpleNamespace(
         text=(
             'var eps1 = ["https://video.sibnet.ru/shell.php?videoid=1"];\n'
@@ -192,7 +214,6 @@ def test_requested_am_player_has_enabled_fallbacks(monkeypatch):
 
     assert links == [
         "https://video.sibnet.ru/shell.php?videoid=1",
-        "https://sendvid.com/embed/abc",
     ]
 
 
