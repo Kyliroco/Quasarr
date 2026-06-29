@@ -88,9 +88,30 @@ class PackageSnapshotter:
             self._thread.join(timeout=2)
 
     def get(self) -> Tuple[Dict[str, Any], float, Optional[str]]:
-        """Réponse instantanée — retourne (snapshot, last_updated_epoch, last_error)."""
+        """Retourne le snapshot avec l'état AM relu juste avant la réponse."""
+        try:
+            from quasarr.downloads.ytdlp_worker import get_all_jobs
+            ytdlp_jobs = get_all_jobs(self.shared_state)
+        except Exception as exc:
+            ytdlp_jobs = None
+            debug(f"[Snapshotter] live yt-dlp read failed: {exc}")
         with self._lock:
+            if ytdlp_jobs is not None:
+                self._snapshot = self._with_ytdlp_jobs(self._snapshot, ytdlp_jobs)
             return self._snapshot, self._last_updated, self._last_error
+
+    @staticmethod
+    def _with_ytdlp_jobs(snapshot, jobs):
+        """Remplace atomiquement la portion yt-dlp d'un snapshot existant."""
+        merged = {
+            "queue": [slot for slot in snapshot.get("queue", []) if slot.get("type") != "ytdlp"],
+            "history": [slot for slot in snapshot.get("history", []) if slot.get("type") != "ytdlp"],
+        }
+        for package_id, job in jobs:
+            location, slot = _ytdlp_slot(package_id, job, len(merged["queue"]))
+            if location and slot:
+                merged[location].append(slot)
+        return merged
 
     def update_ytdlp_job(self, job) -> None:
         """Publie immédiatement un état AM sans interroger JDownloader."""
@@ -116,15 +137,7 @@ class PackageSnapshotter:
 
         jobs = get_all_jobs(self.shared_state)
         with self._lock:
-            snapshot = {
-                "queue": [slot for slot in self._snapshot.get("queue", []) if slot.get("type") != "ytdlp"],
-                "history": [slot for slot in self._snapshot.get("history", []) if slot.get("type") != "ytdlp"],
-            }
-            for package_id, job in jobs:
-                location, slot = _ytdlp_slot(package_id, job, len(snapshot["queue"]))
-                if location and slot:
-                    snapshot[location].append(slot)
-            self._snapshot = snapshot
+            self._snapshot = self._with_ytdlp_jobs(self._snapshot, jobs)
             self._last_updated = time.time()
 
     def force_refresh(self) -> None:
