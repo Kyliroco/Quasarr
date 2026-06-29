@@ -75,6 +75,25 @@ def _category_from_package_id(package_id):
     return "tv"
 
 
+def _completed_output_exists(job):
+    """Vérifie qu'un ancien job terminé possède encore un média importable."""
+    storage = job.get("storage")
+    if not storage:
+        return False
+    if os.path.isfile(storage):
+        return True
+    if not os.path.isdir(storage):
+        return False
+    try:
+        return any(
+            os.path.isfile(os.path.join(storage, name))
+            and not name.endswith((".part", ".ytdl"))
+            for name in os.listdir(storage)
+        )
+    except OSError:
+        return False
+
+
 def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, source_url=None):
     """Crée un job persistant sans écraser un téléchargement déjà connu."""
     database = shared_state.get_db(YTDLP_TABLE)
@@ -82,9 +101,15 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, s
     if existing_raw:
         try:
             existing = json.loads(existing_raw)
-            if existing.get("status") in {"queued", "downloading", "completed"}:
+            status = existing.get("status")
+            if status in {"queued", "downloading"}:
                 debug(f'[yt-dlp] keeping existing {existing.get("status")} job "{title}"')
                 return existing
+            if status == "completed" and _completed_output_exists(existing):
+                debug(f'[yt-dlp] keeping existing completed job with output "{title}"')
+                return existing
+            if status == "completed":
+                info(f'[yt-dlp] requeueing "{title}" because its completed output was moved')
         except (TypeError, ValueError):
             pass
 

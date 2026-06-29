@@ -13,6 +13,7 @@ from quasarr.downloads.ytdlp_worker import (
     MIN_INTER_JOB_DELAY,
     YtdlpWorker,
     _apply_ownership,
+    _completed_output_exists,
     _nearest_ownership,
     enqueue_job,
     get_all_jobs,
@@ -156,6 +157,53 @@ def test_enqueue_is_fifo_and_does_not_overwrite_active_job(monkeypatch):
     assert duplicate == first
     assert duplicate["candidates"] == ["https://one"]
     assert second["status"] == "queued"
+
+
+def test_completed_job_is_requeued_after_sonarr_moved_its_file(tmp_path):
+    state = FakeState(str(tmp_path))
+    first = enqueue_job(state, "pkg-retry", "Episode 1", ["https://old"], "tt1", 450)
+    first.update({
+        "status": "completed",
+        "storage": os.fspath(tmp_path / "Episode.1.mp4"),
+        "queue_seen": True,
+    })
+    state.db.update_store("pkg-retry", json.dumps(first))
+
+    retried = enqueue_job(
+        state,
+        "pkg-retry",
+        "Episode 1",
+        ["https://new"],
+        "tt1",
+        450,
+    )
+
+    assert _completed_output_exists(first) is False
+    assert retried["status"] == "queued"
+    assert retried["candidates"] == ["https://new"]
+    assert retried["queue_seen"] is False
+
+
+def test_completed_job_is_kept_while_its_file_still_exists(tmp_path):
+    state = FakeState(str(tmp_path))
+    media = tmp_path / "Episode.1.mp4"
+    media.write_bytes(b"video")
+    first = enqueue_job(state, "pkg-existing", "Episode 1", ["https://old"], "tt1", 450)
+    first.update({"status": "completed", "storage": os.fspath(media)})
+    state.db.update_store("pkg-existing", json.dumps(first))
+
+    duplicate = enqueue_job(
+        state,
+        "pkg-existing",
+        "Episode 1",
+        ["https://new"],
+        "tt1",
+        450,
+    )
+
+    assert _completed_output_exists(first) is True
+    assert duplicate["status"] == "completed"
+    assert duplicate["candidates"] == ["https://old"]
 
 
 def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
