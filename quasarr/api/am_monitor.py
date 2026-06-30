@@ -1,10 +1,34 @@
 # -*- coding: utf-8 -*-
 
+import copy
+import threading
 import time
+
+from bottle import request
 
 from quasarr.downloads.ytdlp_worker import get_all_jobs
 from quasarr.providers.html_templates import render_button, render_form
 from quasarr.search.sources.am import _host_tag
+
+_SONARR_RESPONSES_KEY = "sonarr_download_client_responses"
+_SONARR_RESPONSES_LOCK = threading.RLock()
+
+
+def record_sonarr_response(app, mode, payload, requester=None):
+    """Mémorise le JSON exact renvoyé au dernier appel queue/history."""
+    with _SONARR_RESPONSES_LOCK:
+        responses = dict(app.config.get(_SONARR_RESPONSES_KEY) or {})
+        responses[mode] = {
+            "updated_at": int(time.time()),
+            "requester": requester or "unknown",
+            "payload": copy.deepcopy(payload),
+        }
+        app.config[_SONARR_RESPONSES_KEY] = responses
+
+
+def get_sonarr_responses(app):
+    with _SONARR_RESPONSES_LOCK:
+        return copy.deepcopy(app.config.get(_SONARR_RESPONSES_KEY) or {})
 
 
 def _job_payload(package_id, job, queue_position=None):
@@ -56,7 +80,10 @@ def _monitor_page():
     <div class="am-monitor">
       <div class="monitor-head">
         <p>Live view of anime-sama downloads. Updates every second.</p>
-        <span id="refresh-state" class="refresh-state">Connecting…</span>
+        <div class="refresh-controls">
+          <span id="refresh-state" class="refresh-state">Connecting…</span>
+          <button type="button" class="monitor-refresh" onclick="refreshMonitor()">Refresh</button>
+        </div>
       </div>
 
       <div class="summary-grid">
@@ -90,12 +117,30 @@ def _monitor_page():
           </table>
         </div>
       </section>
+
+      <section class="monitor-section sonarr-section">
+        <h3>Last responses sent to Sonarr</h3>
+        <p class="section-hint">Click Refresh in Sonarr, then inspect the exact SABnzbd queue and history JSON returned by Quasarr.</p>
+        <div class="sonarr-response-grid">
+          <article class="response-card">
+            <div class="response-head"><strong>Queue</strong><span id="sonarr-queue-meta">No request captured.</span></div>
+            <pre id="sonarr-queue-payload">No queue response captured yet.</pre>
+          </article>
+          <article class="response-card">
+            <div class="response-head"><strong>History</strong><span id="sonarr-history-meta">No request captured.</span></div>
+            <pre id="sonarr-history-payload">No history response captured yet.</pre>
+          </article>
+        </div>
+      </section>
     </div>
 
     <style>
       .am-monitor { width:min(1100px, 88vw); text-align:left; }
       .monitor-head { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; }
+      .refresh-controls { display:flex; align-items:center; gap:.75rem; }
       .refresh-state { color:var(--secondary); font-size:.875rem; }
+      .monitor-refresh { border:0; border-radius:.45rem; padding:.45rem .8rem; background:#6c757d; color:#fff; cursor:pointer; }
+      .monitor-refresh:hover { filter:brightness(1.08); }
       .summary-grid { display:grid; grid-template-columns:repeat(4, minmax(110px, 1fr)); gap:.75rem; margin:1.25rem 0; }
       .summary-card { background:var(--code-bg); border-radius:.75rem; padding:.8rem 1rem; display:flex; align-items:baseline; gap:.6rem; }
       .summary-card strong { color:var(--primary); font-size:1.5rem; }
@@ -126,9 +171,16 @@ def _monitor_page():
       .release-cell { min-width:280px; overflow-wrap:anywhere; }
       .empty-state, .empty-cell { color:var(--secondary); text-align:center; padding:1.5rem; }
       .ok { color:#198754; } .failed { color:#dc3545; }
+      .section-hint { color:var(--secondary); font-size:.875rem; }
+      .sonarr-response-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+      .response-card { min-width:0; background:var(--code-bg); border-radius:.75rem; padding:1rem; }
+      .response-head { display:flex; justify-content:space-between; align-items:baseline; gap:.75rem; margin-bottom:.7rem; }
+      .response-head span { color:var(--secondary); font-size:.75rem; text-align:right; overflow-wrap:anywhere; }
+      .response-card pre { margin:0; max-height:420px; overflow:auto; white-space:pre; font-size:.75rem; }
       @media (max-width:760px) {
         .summary-grid { grid-template-columns:repeat(2, 1fr); }
         .metric-grid { grid-template-columns:repeat(2, 1fr); }
+        .sonarr-response-grid { grid-template-columns:1fr; }
         .am-monitor { width:90vw; }
       }
     </style>
@@ -233,6 +285,18 @@ def _monitor_page():
         </tr>`).join('');
       }
 
+      function renderSonarrResponse(mode, entry) {
+        const meta = document.getElementById(`sonarr-${mode}-meta`);
+        const payload = document.getElementById(`sonarr-${mode}-payload`);
+        if (!entry) {
+          meta.textContent = 'No request captured.';
+          payload.textContent = `No ${mode} response captured yet.`;
+          return;
+        }
+        meta.textContent = `${dateTime(entry.updated_at)} — ${entry.requester || 'unknown'}`;
+        payload.textContent = JSON.stringify(entry.payload, null, 2);
+      }
+
       async function refreshMonitor() {
         const state = document.getElementById('refresh-state');
         try {
@@ -247,6 +311,8 @@ def _monitor_page():
           renderQueue(data.jobs.filter(job => job.status === 'queued'));
           renderHistory(data.jobs.filter(job => job.status === 'completed' || job.status === 'failed')
             .sort((a, b) => b.completed_at - a.completed_at));
+          renderSonarrResponse('queue', data.sonarr_responses?.queue);
+          renderSonarrResponse('history', data.sonarr_responses?.history);
           state.textContent = `Updated ${new Date().toLocaleTimeString()}`;
         } catch (error) {
           state.textContent = `Update failed: ${error.message}`;
@@ -287,5 +353,6 @@ def setup_am_monitor(app, shared_state):
                 "completed": sum(job["status"] == "completed" for job in jobs),
                 "failed": sum(job["status"] == "failed" for job in jobs),
             },
+            "sonarr_responses": get_sonarr_responses(request.app),
             "jobs": jobs,
         }
