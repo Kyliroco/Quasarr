@@ -10,7 +10,7 @@ from quasarr.api.am_monitor import (
     record_sonarr_response,
 )
 from quasarr.downloads import _package_id
-from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
+from quasarr.downloads.packages.package_snapshot import PackageSnapshotter, public_download_slots
 from quasarr.downloads.sources import am as download_am
 from quasarr.downloads.ytdlp_worker import (
     DEFAULT_OUTPUT_DIR,
@@ -281,6 +281,9 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
     assert snapshot["queue"][0]["nzo_id"] == "pkg-fast"
+    assert snapshot["queue"][0]["type"] == "downloader"
+    assert snapshot["queue"][0]["filename"] == "[Downloading] Fast S01E01"
+    assert snapshot["queue"][0]["_source"] == "ytdlp"
 
     job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024, queue_seen=True)
     state.db.update_store("pkg-fast", json.dumps(job))
@@ -296,6 +299,7 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     snapshot, _, _ = snapshotter.get()
     assert snapshot["history"][0]["status"] == "Failed"
     assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403"
+    assert snapshot["history"][0]["storage"] == "/"
 
 
 def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
@@ -328,6 +332,30 @@ def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
     assert snapshot["history"][0]["storage"] == "/output/Instant.S01E01"
 
 
+def test_queued_am_payload_matches_jdownloader_shape_sent_to_sonarr():
+    state = FakeState()
+    job = enqueue_job(state, "pkg-queue-shape", "Show.S01E01", ["https://one"], "tt1", 450)
+    snapshotter = PackageSnapshotter(state)
+
+    snapshot, _, _ = snapshotter.get()
+    public = public_download_slots(snapshot["queue"])[0]
+
+    assert public == {
+        "index": 0,
+        "nzo_id": "pkg-queue-shape",
+        "priority": "Normal",
+        "filename": "[Paused] Show.S01E01",
+        "cat": "tv",
+        "mbleft": 450,
+        "mb": 450,
+        "status": "Downloading",
+        "percentage": 0,
+        "timeleft": "23:59:59",
+        "type": "downloader",
+        "uuid": job["uuid"],
+    }
+
+
 def test_failed_am_job_goes_directly_to_history_for_sonarr_blocklist():
     state = FakeState()
     job = enqueue_job(state, "pkg-failed-fast", "Failed.S01E01", ["https://one"], "tt1", 450)
@@ -343,10 +371,19 @@ def test_failed_am_job_goes_directly_to_history_for_sonarr_blocklist():
     snapshot, _, _ = snapshotter.get()
 
     assert snapshot["queue"] == []
-    assert snapshot["history"][0]["nzo_id"] == "pkg-failed-fast"
-    assert snapshot["history"][0]["status"] == "Failed"
-    assert snapshot["history"][0]["fail_message"] == "DownloadError: HTTP Error 403: Forbidden"
-    assert snapshot["history"][0]["storage"] == "/output/Failed.S01E01"
+    public = public_download_slots(snapshot["history"])[0]
+    assert public == {
+        "fail_message": "DownloadError: HTTP Error 403: Forbidden",
+        "category": "tv",
+        "storage": "/",
+        "status": "Failed",
+        "nzo_id": "pkg-failed-fast",
+        "name": "Failed.S01E01",
+        "bytes": 0,
+        "percentage": 100,
+        "type": "downloader",
+        "uuid": "pkg-failed-fast",
+    }
 
 
 def test_legacy_fallback_jobs_are_migrated_to_one_player():

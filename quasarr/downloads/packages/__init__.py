@@ -103,7 +103,11 @@ def delete_package(shared_state, package_id):
         for package_location in packages:
             for package in packages[package_location]:
                 if package["nzo_id"] == package_id:
-                    if package["type"] == "linkgrabber":
+                    if package.get("_source") == "ytdlp":
+                        # Le payload public imite maintenant exactement un
+                        # downloader JDownloader, mais ce job reste local.
+                        pass
+                    elif package["type"] == "linkgrabber":
                         ids = get_links_matching_package_uuid(package,
                                                               shared_state.get_device().linkgrabber.query_links())
                         if ids:
