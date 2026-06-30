@@ -33,6 +33,23 @@ def get_output_dir(shared_state):
     return configured or DEFAULT_OUTPUT_DIR
 
 
+def get_max_speed_bps(shared_state):
+    """Limite de débit en octets/s (0 = illimité).
+
+    L'UI stocke une valeur en Mo/s (``max_speed_mbps``) ; yt-dlp attend des
+    octets/s via l'option ``ratelimit``. Une valeur vide ou <= 0 désactive la
+    limite.
+    """
+    raw = shared_state.values["config"]("YTDLP").get("max_speed_mbps")
+    try:
+        mbps = float(str(raw).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return 0
+    if mbps <= 0:
+        return 0
+    return int(mbps * 1024 * 1024)
+
+
 def _nearest_ownership(path):
     """UID/GID du plus proche parent existant, si la plateforme le permet."""
     if not hasattr(os, "chown"):
@@ -428,6 +445,12 @@ class YtdlpWorker:
                 "User-Agent": self.shared_state.values.get("user_agent", ""),
             },
         }
+
+        # Limite de débit optionnelle (octets/s) appliquée à chaque lecteur.
+        max_speed_bps = get_max_speed_bps(self.shared_state)
+        if max_speed_bps > 0:
+            ydl_opts["ratelimit"] = max_speed_bps
+            debug(f"[yt-dlp] rate limited to {max_speed_bps} B/s")
 
         from quasarr.providers.players import record_player_speed
         from quasarr.search.sources.am import _host_tag

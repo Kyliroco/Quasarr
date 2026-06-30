@@ -30,9 +30,12 @@ def setup_config(app, shared_state):
 
     @app.get('/ytdlp')
     def ytdlp_ui():
-        from quasarr.downloads.ytdlp_worker import get_output_dir
+        from quasarr.downloads.ytdlp_worker import get_output_dir, get_max_speed_bps
         current = Config('YTDLP').get('output_dir') or ''
         effective = get_output_dir(shared_state)
+        current_speed = Config('YTDLP').get('max_speed_mbps') or ''
+        max_speed_bps = get_max_speed_bps(shared_state)
+        speed_state = f"{max_speed_bps / (1024 * 1024):.2f} MB/s" if max_speed_bps else "unlimited"
         form = f'''
         <p>Folder where yt-dlp (anime-sama) saves finished files. Radarr/Sonarr import
         from here, so it must be reachable by them (mind Docker path mappings).</p>
@@ -40,20 +43,26 @@ def setup_config(app, shared_state):
             <label for="output_dir">Download folder</label>
             <input type="text" id="output_dir" name="output_dir"
                    placeholder="{effective}" autocorrect="off" autocomplete="off" value="{current}"><br>
+            <label for="max_speed_mbps">Max download speed (MB/s, empty = unlimited)</label>
+            <input type="text" id="max_speed_mbps" name="max_speed_mbps"
+                   placeholder="unlimited" autocorrect="off" autocomplete="off" value="{current_speed}"><br>
             {render_button("Save", "primary", {"type": "submit"})}
         </form>
-        <p>Currently effective: <code>{effective}</code></p>
+        <p>Currently effective: folder <code>{effective}</code>, speed <code>{speed_state}</code></p>
         <p>{render_button("Back", "secondary", {"onclick": "location.href='/'"})}</p>
         '''
-        return render_form("yt-dlp download folder", form)
+        return render_form("yt-dlp download settings", form)
 
     @app.post('/api/ytdlp')
     def ytdlp_api():
         output_dir = (request.forms.get('output_dir') or '').strip()
+        max_speed = (request.forms.get('max_speed_mbps') or '').strip()
         Config('YTDLP').save('output_dir', output_dir)
+        Config('YTDLP').save('max_speed_mbps', max_speed)
+        speed_msg = f"max speed {max_speed} MB/s" if max_speed else "unlimited speed"
         if output_dir:
-            return render_success(f'yt-dlp download folder set to: "{output_dir}"', 3)
-        return render_success('yt-dlp download folder reset to default', 3)
+            return render_success(f'yt-dlp set: folder "{output_dir}", {speed_msg}', 3)
+        return render_success(f'yt-dlp set: default folder, {speed_msg}', 3)
 
     @app.get('/players')
     def players_ui():
