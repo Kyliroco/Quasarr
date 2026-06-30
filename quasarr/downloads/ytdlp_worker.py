@@ -119,6 +119,7 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, s
     except (TypeError, ValueError):
         size_mb_int = 0
 
+    added_ns = time.time_ns()
     job = {
         "package_id": package_id,
         "title": title,
@@ -138,7 +139,8 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, s
         "storage": "",
         "error": "",
         "added": int(time.time()),
-        "added_ns": time.time_ns(),
+        "added_ns": added_ns,
+        "uuid": added_ns // 1_000_000,
         "candidate_index": 0,
     }
     database.update_store(package_id, json.dumps(job))

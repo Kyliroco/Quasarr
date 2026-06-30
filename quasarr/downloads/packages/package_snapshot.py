@@ -14,6 +14,29 @@ from quasarr.providers.myjd_api import TokenExpiredException, RequestTimeoutExce
 POLL_INTERVAL_SECONDS = 30
 
 
+def _is_ytdlp_slot(slot):
+    return slot.get("_source") == "ytdlp" or slot.get("type") == "ytdlp"
+
+
+def _ytdlp_uuid(package_id, job):
+    value = job.get("uuid")
+    if value is not None:
+        return value
+    added_ns = int(job.get("added_ns") or 0)
+    if added_ns:
+        return added_ns // 1_000_000
+    added = int(job.get("added") or 0)
+    return added * 1000 if added else package_id
+
+
+def public_download_slots(slots):
+    """Retire les marqueurs internes avant de répondre à Sonarr/Radarr."""
+    return [
+        {key: value for key, value in slot.items() if not key.startswith("_")}
+        for slot in slots
+    ]
+
+
 def _format_eta(seconds: int) -> str:
     if seconds is None or seconds < 0:
         return "23:59:59"
@@ -49,24 +72,27 @@ def _ytdlp_slot(package_id, job, index=0):
         else:
             eta = job.get("eta")
             timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
-            label = "Queued" if status == "queued" else "Downloading"
+            label = "Paused" if status == "queued" else "Downloading"
         return "queue", {
             "index": index, "nzo_id": package_id, "priority": "Normal",
-            "filename": f"[yt-dlp/{label}] {title}", "cat": cat,
+            "filename": f"[{label}] {title}", "cat": cat,
             "mbleft": mb_left, "mb": mb_total, "status": "Downloading",
             "percentage": 100 if terminal_waiting_for_queue_ack else int(job.get("percent") or 0),
             "timeleft": timeleft,
-            "type": "ytdlp", "uuid": package_id,
+            "type": "downloader", "uuid": _ytdlp_uuid(package_id, job),
+            "_source": "ytdlp",
         }
     if status in ("completed", "failed"):
         err = job.get("error") if status == "failed" else ""
         return "history", {
             "fail_message": err or "", "category": cat,
-            "storage": job.get("storage", ""),
+            "storage": "/" if status == "failed" else job.get("storage", ""),
             "status": "Failed" if status == "failed" else "Completed",
             "nzo_id": package_id, "name": title,
             "bytes": int(job.get("bytes_loaded") or 0),
-            "percentage": 100, "type": "ytdlp", "uuid": package_id,
+            "percentage": 100, "type": "downloader",
+            "uuid": package_id if status == "failed" else _ytdlp_uuid(package_id, job),
+            "_source": "ytdlp",
         }
     return None, None
 
@@ -116,8 +142,8 @@ class PackageSnapshotter:
     def _with_ytdlp_jobs(snapshot, jobs):
         """Remplace atomiquement la portion yt-dlp d'un snapshot existant."""
         merged = {
-            "queue": [slot for slot in snapshot.get("queue", []) if slot.get("type") != "ytdlp"],
-            "history": [slot for slot in snapshot.get("history", []) if slot.get("type") != "ytdlp"],
+            "queue": [slot for slot in snapshot.get("queue", []) if not _is_ytdlp_slot(slot)],
+            "history": [slot for slot in snapshot.get("history", []) if not _is_ytdlp_slot(slot)],
         }
         for package_id, job in jobs:
             location, slot = _ytdlp_slot(package_id, job, len(merged["queue"]))
@@ -133,9 +159,9 @@ class PackageSnapshotter:
         with self._lock:
             snapshot = {
                 "queue": [slot for slot in self._snapshot.get("queue", [])
-                          if not (slot.get("type") == "ytdlp" and slot.get("nzo_id") == package_id)],
+                          if not (_is_ytdlp_slot(slot) and slot.get("nzo_id") == package_id)],
                 "history": [slot for slot in self._snapshot.get("history", [])
-                            if not (slot.get("type") == "ytdlp" and slot.get("nzo_id") == package_id)],
+                            if not (_is_ytdlp_slot(slot) and slot.get("nzo_id") == package_id)],
             }
             location, slot = _ytdlp_slot(package_id, job, len(snapshot["queue"]))
             if location and slot:

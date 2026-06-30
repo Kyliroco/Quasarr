@@ -17,6 +17,7 @@ from quasarr.downloads import download
 from quasarr.downloads.ytdlp_worker import mark_queue_seen
 from quasarr.downloads import packages
 from quasarr.downloads.packages import get_packages, delete_package
+from quasarr.downloads.packages.package_snapshot import public_download_slots
 from quasarr.api.am_monitor import record_sonarr_response
 from quasarr.providers import shared_state
 from quasarr.providers.log import info, debug, warning, error, log_event
@@ -302,12 +303,13 @@ def setup_arr_routes(app):
 
                     packages = get_packages()
                     if mode == "queue":
-                        slots = packages.get("queue", [])
+                        internal_slots = packages.get("queue", [])
                         mark_queue_seen(
                             shared_state,
-                            [slot.get("nzo_id") for slot in slots
-                             if slot.get("type") == "ytdlp" and slot.get("nzo_id")],
+                            [slot.get("nzo_id") for slot in internal_slots
+                             if slot.get("_source") == "ytdlp" and slot.get("nzo_id")],
                         )
+                        slots = public_download_slots(internal_slots)
                         payload = {
                             "queue": {
                                 "paused": False,
@@ -408,7 +410,7 @@ def setup_arr_routes(app):
                         payload = {
                             "history": {
                                 "paused": False,
-                                "slots": packages.get("history", [])
+                                "slots": public_download_slots(packages.get("history", []))
                             }
                         }
                         record_sonarr_response(
