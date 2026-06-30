@@ -3,7 +3,12 @@ import os
 import sys
 from types import SimpleNamespace
 
-from quasarr.api.am_monitor import _job_payload, _monitor_page
+from quasarr.api.am_monitor import (
+    _job_payload,
+    _monitor_page,
+    get_sonarr_responses,
+    record_sonarr_response,
+)
 from quasarr.downloads import _package_id
 from quasarr.downloads.packages.package_snapshot import PackageSnapshotter
 from quasarr.downloads.sources import am as download_am
@@ -96,6 +101,9 @@ def test_am_monitor_payload_exposes_live_metrics():
     assert "setInterval(refreshMonitor, 1000)" in page
     assert "Open download link" in page
     assert 'rel="noopener noreferrer"' in page
+    assert "Last responses sent to Sonarr" in page
+    assert 'id="sonarr-queue-payload"' in page
+    assert 'id="sonarr-history-payload"' in page
 
     legacy_failed = _job_payload("pkg-failed", {
         "title": "Show.S01E02",
@@ -104,6 +112,21 @@ def test_am_monitor_payload_exposes_live_metrics():
         "candidates": ["https://vidmoly.to/embed-demo.html"],
     })
     assert legacy_failed["candidate"] == "https://vidmoly.to/embed-demo.html"
+
+
+def test_sonarr_response_monitor_keeps_exact_queue_and_history_payloads():
+    app = SimpleNamespace(config={})
+    queue = {"queue": {"paused": False, "slots": [{"nzo_id": "pkg-1"}]}}
+    history = {"history": {"paused": False, "slots": [{"status": "Failed"}]}}
+
+    record_sonarr_response(app, "queue", queue, "Sonarr/4.0")
+    record_sonarr_response(app, "history", history, "Sonarr/4.0")
+    queue["queue"]["slots"].clear()
+
+    captured = get_sonarr_responses(app)
+    assert captured["queue"]["payload"]["queue"]["slots"] == [{"nzo_id": "pkg-1"}]
+    assert captured["history"]["payload"] == history
+    assert captured["queue"]["requester"] == "Sonarr/4.0"
 
 
 def test_am_page_load_uses_random_jitter(monkeypatch):
@@ -206,6 +229,43 @@ def test_completed_job_is_kept_while_its_file_still_exists(tmp_path):
     assert duplicate["candidates"] == ["https://old"]
 
 
+def test_startup_moves_already_completed_flat_file_back_into_folder(tmp_path):
+    state = FakeState(str(tmp_path))
+    flat_media = tmp_path / "Episode.1.mp4"
+    flat_media.write_bytes(b"video")
+    job = enqueue_job(state, "pkg-flat-completed", "Episode 1", ["https://old"], "tt1", 450)
+    job.update({
+        "status": "completed",
+        "storage": os.fspath(flat_media),
+        "queue_seen": True,
+    })
+    state.db.update_store("pkg-flat-completed", json.dumps(job))
+
+    YtdlpWorker(state)._repair_existing_ownership()
+
+    folder = tmp_path / "Episode.1"
+    migrated = json.loads(state.db.retrieve("pkg-flat-completed"))
+    assert not flat_media.exists()
+    assert (folder / "Episode.1.mp4").read_bytes() == b"video"
+    assert migrated["storage"] == os.fspath(folder)
+
+
+def test_startup_restores_flat_anime_sama_file_even_without_database_job(tmp_path):
+    state = FakeState(str(tmp_path))
+    filename = "Aggretsuko.S01E03.FRENCH.1080p.WEB.x264-ANIMESAMA.Vidmoly.mp4"
+    flat_media = tmp_path / filename
+    flat_media.write_bytes(b"video")
+    unrelated = tmp_path / "Other.Show.S01E01.mp4"
+    unrelated.write_bytes(b"other")
+
+    YtdlpWorker(state)._repair_existing_ownership()
+
+    folder = tmp_path / filename.removesuffix(".mp4")
+    assert not flat_media.exists()
+    assert (folder / filename).read_bytes() == b"video"
+    assert unrelated.read_bytes() == b"other"
+
+
 def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     state = FakeState()
     snapshotter = PackageSnapshotter(state)
@@ -305,6 +365,20 @@ def test_legacy_fallback_jobs_are_migrated_to_one_player():
     assert migrated["error"] == "Requested anime-sama player failed (legacy job; exact error unavailable)"
 
 
+def test_startup_removes_folder_of_persisted_failed_job(tmp_path):
+    state = FakeState(str(tmp_path))
+    job = enqueue_job(state, "pkg-old-failure", "Old Failure", ["https://one"], "tt1", 450)
+    job.update(status="failed", error="old failure")
+    state.db.update_store("pkg-old-failure", json.dumps(job))
+    folder = tmp_path / "Old.Failure"
+    folder.mkdir()
+    (folder / "Old.Failure.mp4.part").write_bytes(b"partial")
+
+    YtdlpWorker(state)._migrate_legacy_jobs()
+
+    assert not folder.exists()
+
+
 def test_requested_am_player_is_the_only_download_candidate(monkeypatch):
     response = SimpleNamespace(
         text=(
@@ -383,9 +457,9 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     assert resumed["status"] == "queued"
     assert resumed["candidate_index"] == 1
 
-    legacy_folder = tmp_path / "Show.S01E02"
-    legacy_folder.mkdir()
-    partial = legacy_folder / "Show.S01E02.mp4.part"
+    output_folder = tmp_path / "Show.S01E02"
+    # Simule un .part créé à la racine par la courte version sans dossiers.
+    partial = tmp_path / "Show.S01E02.mp4.part"
     partial.write_bytes(b"already downloaded")
     unrelated = tmp_path / "Another.Show.S01E01.mp4"
     unrelated.write_bytes(b"unrelated and deliberately larger")
@@ -405,7 +479,7 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
         def download(self, links):
             assert links == ["https://resume.invalid/video"]
             assert not partial.exists()
-            assert (tmp_path / "Show.S01E02.mp4.part").exists()
+            assert (output_folder / "Show.S01E02.mp4.part").exists()
             final = self.options["outtmpl"].replace("%(ext)s", "mp4")
             with open(final, "wb") as stream:
                 stream.write(b"complete file")
@@ -416,13 +490,53 @@ def test_orphan_resume_keeps_candidate_and_partial_file(tmp_path, monkeypatch):
     completed = json.loads(state.db.retrieve("pkg-resume"))
     assert completed["status"] == "completed"
     assert completed["candidate_index"] == 1
-    assert completed["storage"] == os.fspath(tmp_path / "Show.S01E02.mp4")
-    assert not legacy_folder.exists()
+    assert completed["storage"] == os.fspath(output_folder)
+    assert (output_folder / "Show.S01E02.mp4").exists()
     assert unrelated.exists()
     assert calls[0]["continuedl"] is True
     assert calls[0]["nopart"] is False
     assert calls[0]["overwrites"] is False
     assert statuses == ["downloading", "completed"]
+
+
+def test_failed_download_removes_only_its_own_output_folder(tmp_path, monkeypatch):
+    state = FakeState(str(tmp_path))
+    job = enqueue_job(
+        state,
+        "pkg-failed-folder",
+        "Failed S01E01",
+        ["https://failed.invalid/video"],
+        "tt1",
+        450,
+    )
+    untouched = tmp_path / "Other.Show.S01E01"
+    untouched.mkdir()
+    (untouched / "keep.mp4").write_bytes(b"keep")
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def download(self, _links):
+            partial = self.options["outtmpl"].replace("%(ext)s", "mp4.part")
+            with open(partial, "wb") as stream:
+                stream.write(b"partial")
+            raise RuntimeError("download failed")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    YtdlpWorker(state, inter_job_delay=0)._run_job(job)
+
+    failed = json.loads(state.db.retrieve("pkg-failed-folder"))
+    assert failed["status"] == "failed"
+    assert failed["storage"] == os.fspath(tmp_path / "Failed.S01E01")
+    assert not (tmp_path / "Failed.S01E01").exists()
+    assert (untouched / "keep.mp4").exists()
 
 
 def test_sibnet_uses_ipv4_source_referer_and_retries_403(tmp_path, monkeypatch):

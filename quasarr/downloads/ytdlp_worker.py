@@ -14,6 +14,7 @@ queue/history à Sonarr/Radarr exactement comme pour les paquets JDownloader.
 import json
 import os
 import random
+import shutil
 import threading
 import time
 from urllib.parse import urlparse
@@ -276,6 +277,10 @@ class YtdlpWorker:
             if changed:
                 self._save(job)
                 self._notify_status_change(job)
+            if job.get("status") == "failed":
+                safe_name = self.shared_state.sanitize_title(job.get("title", "")) or "download"
+                output_dir = get_output_dir(self.shared_state)
+                self._remove_failed_folder(output_dir, os.path.join(output_dir, safe_name))
 
     def _next_queued(self):
         for _package_id, job in get_all_jobs(self.shared_state):
@@ -287,17 +292,28 @@ class YtdlpWorker:
         """Répare au démarrage les dossiers des jobs persistés précédemment."""
         output_dir = get_output_dir(self.shared_state)
         ownership = _nearest_ownership(output_dir)
-        if not ownership:
-            return
         for _package_id, job in get_all_jobs(self.shared_state):
             safe_name = self.shared_state.sanitize_title(job.get("title", "")) or "download"
+            out_folder = os.path.join(output_dir, safe_name)
+            flat_files = self._matching_output_files(output_dir, safe_name)
+            if flat_files:
+                try:
+                    os.makedirs(out_folder, exist_ok=True)
+                    self._migrate_flat_output(output_dir, out_folder, safe_name)
+                    if job.get("status") == "completed":
+                        job["storage"] = out_folder
+                        self._save(job)
+                        self._notify_status_change(job)
+                except OSError as exc:
+                    error(f'[yt-dlp] could not restore output folder "{out_folder}": {exc}')
             storage = job.get("storage")
             if storage:
                 _apply_ownership(storage, ownership)
-            # Compatibilité avec les anciens jobs rangés dans un sous-dossier.
-            _apply_ownership(os.path.join(output_dir, safe_name), ownership)
+            _apply_ownership(out_folder, ownership)
             for path in self._matching_output_files(output_dir, safe_name):
                 _apply_ownership(path, ownership)
+        for restored_folder in self._restore_untracked_flat_outputs(output_dir):
+            _apply_ownership(restored_folder, ownership)
 
     # ---------- Persistance ----------
 
@@ -347,16 +363,17 @@ class YtdlpWorker:
         safe_name = self.shared_state.sanitize_title(title) or "download"
         output_dir = get_output_dir(self.shared_state)
         ownership = _nearest_ownership(output_dir)
-        output_prefix = os.path.join(output_dir, safe_name)
+        out_folder = os.path.join(output_dir, safe_name)
         try:
-            os.makedirs(output_dir, exist_ok=True)
-            self._migrate_legacy_output(output_dir, safe_name)
+            os.makedirs(out_folder, exist_ok=True)
+            self._migrate_flat_output(output_dir, out_folder, safe_name)
+            _apply_ownership(out_folder, ownership)
         except Exception as exc:
             job["status"] = "failed"
-            job["error"] = f"cannot create output directory: {exc}"
+            job["error"] = f"cannot create output folder: {exc}"
             self._save(job)
             self._notify_status_change(job)
-            error(f'[yt-dlp] cannot create "{output_dir}": {exc}')
+            error(f'[yt-dlp] cannot create "{out_folder}": {exc}')
             return
 
         last_save = {"t": 0.0, "sample_t": time.time(), "sample_bytes": 0}
@@ -387,7 +404,7 @@ class YtdlpWorker:
                     self._save(job)
 
         ydl_opts = {
-            "outtmpl": output_prefix + ".%(ext)s",
+            "outtmpl": os.path.join(out_folder, safe_name + ".%(ext)s"),
             "quiet": True,
             "no_warnings": True,
             "noprogress": True,
@@ -476,25 +493,22 @@ class YtdlpWorker:
                 job["speed_bps"] = 0
                 job["updated_at"] = int(time.time())
                 self._save(job)
-                self._remove_partial_files(output_dir, safe_name)
+                self._remove_partial_files(out_folder, safe_name)
                 continue
 
-            downloaded = self._largest_file(output_dir, safe_name)
+            downloaded = self._largest_file(out_folder, safe_name)
             if downloaded:
                 size = os.path.getsize(downloaded)
                 # Sonarr ne voit le job terminé qu'après correction de tous les
                 # fichiers créés par le processus Docker root.
-                _apply_ownership(downloaded, ownership)
+                _apply_ownership(out_folder, ownership)
                 elapsed = max(0.001, time.time() - started)
                 try:
                     record_player_speed(self.shared_state, _host_tag(link), size / elapsed)
                 except Exception as exc:
                     debug(f"[yt-dlp] could not record speed: {exc}")
                 job["status"] = "completed"
-                # Sonarr sait importer un chemin de fichier. Cela permet de
-                # garder tous les médias directement à la racine de /output
-                # sans lui faire analyser les autres téléchargements présents.
-                job["storage"] = downloaded
+                job["storage"] = out_folder
                 job["bytes_loaded"] = size
                 job["bytes_total"] = size
                 job["percent"] = 100
@@ -512,12 +526,11 @@ class YtdlpWorker:
 
         job["status"] = "failed"
         job["error"] = last_error or "Requested anime-sama player failed to produce a file"
-        job["storage"] = output_prefix
+        job["storage"] = out_folder
         job["speed_bps"] = 0
         job["completed_at"] = int(time.time())
         job["updated_at"] = int(time.time())
-        for path in self._matching_output_files(output_dir, safe_name):
-            _apply_ownership(path, ownership)
+        self._remove_failed_folder(output_dir, out_folder)
         self._save(job)
         self._notify_status_change(job)
         info(f'[yt-dlp] failed "{title}" (no working candidate)')
@@ -536,21 +549,59 @@ class YtdlpWorker:
         ]
 
     @classmethod
-    def _migrate_legacy_output(cls, output_dir, safe_name):
-        """Déplace les anciens fichiers du sous-dossier vers la sortie plate."""
-        legacy_folder = os.path.join(output_dir, safe_name)
-        if not os.path.isdir(legacy_folder):
-            return
-        for source in cls._matching_output_files(legacy_folder, safe_name):
-            destination = os.path.join(output_dir, os.path.basename(source))
+    def _migrate_flat_output(cls, output_dir, out_folder, safe_name):
+        """Replace dans le dossier les fichiers créés par la version à plat."""
+        for source in cls._matching_output_files(output_dir, safe_name):
+            destination = os.path.join(out_folder, os.path.basename(source))
             if not os.path.exists(destination):
                 os.replace(source, destination)
+
+    @staticmethod
+    def _restore_untracked_flat_outputs(output_dir):
+        """Range aussi les médias ANIMESAMA plats dont le job a déjà été effacé."""
+        restored = []
         try:
-            os.rmdir(legacy_folder)
+            names = os.listdir(output_dir)
         except OSError:
-            # Le dossier peut contenir un ancien artefact non lié au média ;
-            # on ne le supprime alors jamais de force.
-            pass
+            return restored
+        for name in names:
+            source = os.path.join(output_dir, name)
+            stem, extension = os.path.splitext(name)
+            if (
+                not os.path.isfile(source)
+                or "-ANIMESAMA." not in stem.upper()
+                or extension.lower() in {".part", ".ytdl"}
+            ):
+                continue
+            folder = os.path.join(output_dir, stem)
+            destination = os.path.join(folder, name)
+            try:
+                os.makedirs(folder, exist_ok=True)
+                if not os.path.exists(destination):
+                    os.replace(source, destination)
+                restored.append(folder)
+            except OSError as exc:
+                error(f'[yt-dlp] could not restore untracked output "{source}": {exc}')
+        return restored
+
+    @staticmethod
+    def _remove_failed_folder(output_dir, out_folder):
+        """Supprime uniquement le sous-dossier sûr appartenant au job échoué."""
+        root = os.path.normcase(os.path.realpath(output_dir))
+        target = os.path.normcase(os.path.realpath(out_folder))
+        try:
+            inside_output = os.path.commonpath([root, target]) == root
+        except ValueError:
+            inside_output = False
+        if not inside_output or target == root:
+            error(f'[yt-dlp] refusing to remove unsafe failed folder "{out_folder}"')
+            return
+        if not os.path.isdir(out_folder):
+            return
+        try:
+            shutil.rmtree(out_folder)
+        except OSError as exc:
+            error(f'[yt-dlp] could not remove failed folder "{out_folder}": {exc}')
 
     @classmethod
     def _largest_file(cls, folder, safe_name):

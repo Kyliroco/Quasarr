@@ -17,6 +17,7 @@ from quasarr.downloads import download
 from quasarr.downloads.ytdlp_worker import mark_queue_seen
 from quasarr.downloads import packages
 from quasarr.downloads.packages import get_packages, delete_package
+from quasarr.api.am_monitor import record_sonarr_response
 from quasarr.providers import shared_state
 from quasarr.providers.log import info, debug, warning, error, log_event
 from quasarr.providers.version import get_version
@@ -307,7 +308,7 @@ def setup_arr_routes(app):
                             [slot.get("nzo_id") for slot in slots
                              if slot.get("type") == "ytdlp" and slot.get("nzo_id")],
                         )
-                        return {
+                        payload = {
                             "queue": {
                                 "paused": False,
                                 "slots": slots
@@ -396,13 +397,27 @@ def setup_arr_routes(app):
                             #     "have_quota": "false",
                             # }
                         }
+                        record_sonarr_response(
+                            request.app,
+                            "queue",
+                            payload,
+                            request.headers.get("User-Agent"),
+                        )
+                        return payload
                     elif mode == "history":
-                        return {
+                        payload = {
                             "history": {
                                 "paused": False,
                                 "slots": packages.get("history", [])
                             }
                         }
+                        record_sonarr_response(
+                            request.app,
+                            "history",
+                            payload,
+                            request.headers.get("User-Agent"),
+                        )
+                        return payload
             except Exception as e:
                 info(f"Error loading packages: {e}")
                 info(traceback.format_exc())

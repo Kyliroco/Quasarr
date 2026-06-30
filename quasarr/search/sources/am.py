@@ -94,6 +94,9 @@ def _slugify(text):
     normalized = unicodedata.normalize("NFD", text)
     normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
     normalized = normalized.lower()
+    # TMDB renvoie souvent le signe multiplication "×" là où le slug attend un
+    # "x" (ex. "Hunter × Hunter" → hunter-x-hunter, pas hunter-hunter).
+    normalized = normalized.replace("×", "x")
     normalized = normalized.replace("&", " and ")
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
     return normalized.strip("-")
@@ -105,6 +108,7 @@ def _dotted_title(text):
         return ""
     normalized = unicodedata.normalize("NFD", text)
     normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    normalized = normalized.replace("×", "x")
     normalized = normalized.replace("&", "and")
     normalized = re.sub(r"[^A-Za-z0-9]+", ".", normalized)
     return normalized.strip(".")
