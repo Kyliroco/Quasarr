@@ -49,6 +49,18 @@ def setup_config(app, shared_state):
             {render_button("Save", "primary", {"type": "submit"})}
         </form>
         <p>Currently effective: folder <code>{effective}</code>, speed <code>{speed_state}</code></p>
+
+        <hr>
+        <p><strong>Maintenance</strong></p>
+        <p>Clear all anime-sama (yt-dlp) downloads: removes every queued, active,
+        completed and failed AM job from Quasarr's database. Use this to get rid of
+        stale or ghost entries reported to Sonarr/Radarr. Does not delete files
+        already on disk. Stop active AM downloads first if any.</p>
+        <form action="/api/ytdlp/clear" method="post"
+              onsubmit="return confirm('Clear ALL anime-sama downloads from Quasarr? This cannot be undone.');">
+            {render_button("Clear AM downloads", "secondary", {"type": "submit"})}
+        </form>
+
         <p>{render_button("Back", "secondary", {"onclick": "location.href='/'"})}</p>
         '''
         return render_form("yt-dlp download settings", form)
@@ -63,6 +75,20 @@ def setup_config(app, shared_state):
         if output_dir:
             return render_success(f'yt-dlp set: folder "{output_dir}", {speed_msg}', 3)
         return render_success(f'yt-dlp set: default folder, {speed_msg}', 3)
+
+    @app.post('/api/ytdlp/clear')
+    def ytdlp_clear_api():
+        from quasarr.downloads.ytdlp_worker import YTDLP_TABLE
+        database = shared_state.get_db(YTDLP_TABLE)
+        rows = database.retrieve_all_titles() or []
+        for package_id, _raw in rows:
+            database.delete(package_id)
+        # Republie immédiatement un snapshot sans les jobs AM supprimés.
+        try:
+            request.app.config['snapshotter'].refresh_ytdlp_jobs()
+        except Exception:
+            pass
+        return render_success(f'Cleared {len(rows)} anime-sama download(s)', 3)
 
     @app.get('/players')
     def players_ui():

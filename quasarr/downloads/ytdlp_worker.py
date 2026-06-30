@@ -112,8 +112,28 @@ def _completed_output_exists(job):
         return False
 
 
+def _purge_stale_package(shared_state, package_id):
+    """Supprime toute trace périmée d'un même package_id dans les autres tables.
+
+    Le ``package_id`` est ``sha256(title|url)`` : un même épisode re-grabbé par
+    Sonarr réutilise donc le même id. Si une tentative précédente a échoué et
+    laissé une ligne dans ``failed`` (ou un CAPTCHA en attente dans
+    ``protected``), elle serait renvoyée à Sonarr en history "Failed" en même
+    temps que le nouveau job ``ytdlp`` en queue : Sonarr voit alors le même
+    ``nzo_id`` comme échoué et masque l'entrée de queue. On nettoie d'abord.
+    """
+    for table in ("failed", "protected"):
+        try:
+            if shared_state.get_db(table).retrieve(package_id):
+                shared_state.get_db(table).delete(package_id)
+                debug(f'[yt-dlp] cleared stale "{table}" entry for {package_id}')
+        except Exception as exc:
+            debug(f'[yt-dlp] could not clear "{table}" entry for {package_id}: {exc}')
+
+
 def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, source_url=None):
     """Crée un job persistant sans écraser un téléchargement déjà connu."""
+    _purge_stale_package(shared_state, package_id)
     database = shared_state.get_db(YTDLP_TABLE)
     existing_raw = database.retrieve(package_id)
     if existing_raw:
@@ -152,7 +172,6 @@ def enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, s
         "percent": 0,
         "speed_bps": 0,
         "average_speed_bps": 0,
-        "queue_seen": False,
         "storage": "",
         "error": "",
         "added": int(time.time()),
@@ -181,23 +200,6 @@ def get_all_jobs(shared_state):
             row[0],
         ),
     )
-
-
-def mark_queue_seen(shared_state, package_ids):
-    """Mémorise que Sonarr a reçu ces jobs au moins une fois dans sa queue."""
-    database = shared_state.get_db(YTDLP_TABLE)
-    for package_id in set(package_ids):
-        raw = database.retrieve(package_id)
-        if not raw:
-            continue
-        try:
-            job = json.loads(raw)
-        except (TypeError, ValueError):
-            continue
-        if job.get("queue_seen"):
-            continue
-        job["queue_seen"] = True
-        database.update_store(package_id, json.dumps(job))
 
 
 def _format_eta(seconds):
@@ -337,15 +339,6 @@ class YtdlpWorker:
     # ---------- Persistance ----------
 
     def _save(self, job):
-        # queue_seen peut être posé par un thread HTTP Sonarr pendant que le
-        # worker conserve sa propre copie du job : ne jamais perdre cet ACK.
-        try:
-            existing_raw = self.shared_state.get_db(YTDLP_TABLE).retrieve(job["package_id"])
-            existing = json.loads(existing_raw) if existing_raw else {}
-            if existing.get("queue_seen"):
-                job["queue_seen"] = True
-        except (TypeError, ValueError):
-            pass
         self.shared_state.get_db(YTDLP_TABLE).update_store(
             job["package_id"], json.dumps(job)
         )

@@ -50,13 +50,11 @@ def _ytdlp_slot(package_id, job, index=0):
     status = job.get("status")
     cat = job.get("category") or _cat_from_id(package_id)
     title = job.get("title", "<unknown>")
-    # Un téléchargement terminé très vite doit être montré au moins une fois
-    # dans la queue avant son passage en historique. Un échec, en revanche,
-    # doit aller directement dans l'historique ``Failed`` : Sonarr enchaîne
-    # ses appels queue/history et pourrait sinon conserver l'état Downloading
-    # vu juste avant, sans déclencher la blocklist.
-    terminal_waiting_for_queue_ack = status == "completed" and not job.get("queue_seen", False)
-    if status in ("queued", "downloading") or terminal_waiting_for_queue_ack:
+    # Comportement aligné sur JDownloader : queued/downloading → queue ;
+    # completed/failed → history directement. Sonarr importe (completed) ou
+    # blockliste (failed) dès qu'il voit l'entrée en history, sans étape
+    # intermédiaire (pas de barrière "queue_seen").
+    if status in ("queued", "downloading"):
         bytes_total = int(job.get("bytes_total") or 0)
         bytes_loaded = int(job.get("bytes_loaded") or 0)
         if bytes_total:
@@ -65,19 +63,14 @@ def _ytdlp_slot(package_id, job, index=0):
         else:
             mb_total = int(job.get("size_mb") or 0)
             mb_left = mb_total
-        if terminal_waiting_for_queue_ack:
-            mb_left = 0
-            timeleft = "00:00:00"
-            label = "Completed"
-        else:
-            eta = job.get("eta")
-            timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
-            label = "Paused" if status == "queued" else "Downloading"
+        eta = job.get("eta")
+        timeleft = "23:59:59" if status == "queued" or eta is None else _format_eta(int(eta))
+        label = "Paused" if status == "queued" else "Downloading"
         return "queue", {
             "index": index, "nzo_id": package_id, "priority": "Normal",
             "filename": f"[{label}] {title}", "cat": cat,
             "mbleft": mb_left, "mb": mb_total, "status": "Downloading",
-            "percentage": 100 if terminal_waiting_for_queue_ack else int(job.get("percent") or 0),
+            "percentage": int(job.get("percent") or 0),
             "timeleft": timeleft,
             "type": "downloader", "uuid": _ytdlp_uuid(package_id, job),
             "_source": "ytdlp",
