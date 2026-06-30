@@ -23,7 +23,6 @@ from quasarr.downloads.ytdlp_worker import (
     enqueue_job,
     get_all_jobs,
     get_output_dir,
-    mark_queue_seen,
 )
 from quasarr.search.sources import am
 
@@ -42,10 +41,15 @@ class MemoryDB:
         self.rows[key] = value
         return True
 
+    def delete(self, key):
+        self.rows.pop(key, None)
+        return True
+
 
 class FakeState:
     def __init__(self, output_dir=""):
         self.db = MemoryDB()
+        self.dbs = {"ytdlp": self.db}
         self.output_dir = output_dir
         self.values = {
             "config": self.config,
@@ -58,8 +62,10 @@ class FakeState:
         return SimpleNamespace(get=lambda key: self.output_dir)
 
     def get_db(self, table):
-        assert table in {"ytdlp", "players"}
-        return self.db
+        assert table in {"ytdlp", "players", "failed", "protected"}
+        # "ytdlp" garde la même instance que self.db (utilisée par les tests) ;
+        # les autres tables ont leur propre stockage isolé.
+        return self.dbs.setdefault(table, self.db if table == "ytdlp" else MemoryDB())
 
     @staticmethod
     def sanitize_title(title):
@@ -182,13 +188,28 @@ def test_enqueue_is_fifo_and_does_not_overwrite_active_job(monkeypatch):
     assert second["status"] == "queued"
 
 
+def test_enqueue_clears_stale_failed_entry_for_same_package_id():
+    state = FakeState()
+    # Une tentative précédente a laissé une ligne "failed" pour ce package_id
+    # (re-grab Sonarr → même sha256(title|url) → même id).
+    state.get_db("failed").update_store("pkg-dup", json.dumps({"title": "Ep", "error": "boom"}))
+    state.get_db("protected").update_store("pkg-dup", json.dumps({"title": "Ep"}))
+
+    job = enqueue_job(state, "pkg-dup", "Ep", ["https://one"], "tt1", 450)
+
+    assert job["status"] == "queued"
+    # Plus aucun doublon de nzo_id : la queue (ytdlp) et l'history (failed) ne
+    # peuvent plus exposer le même id à Sonarr en même temps.
+    assert state.get_db("failed").retrieve("pkg-dup") is None
+    assert state.get_db("protected").retrieve("pkg-dup") is None
+
+
 def test_completed_job_is_requeued_after_sonarr_moved_its_file(tmp_path):
     state = FakeState(str(tmp_path))
     first = enqueue_job(state, "pkg-retry", "Episode 1", ["https://old"], "tt1", 450)
     first.update({
         "status": "completed",
         "storage": os.fspath(tmp_path / "Episode.1.mp4"),
-        "queue_seen": True,
     })
     state.db.update_store("pkg-retry", json.dumps(first))
 
@@ -204,7 +225,6 @@ def test_completed_job_is_requeued_after_sonarr_moved_its_file(tmp_path):
     assert _completed_output_exists(first) is False
     assert retried["status"] == "queued"
     assert retried["candidates"] == ["https://new"]
-    assert retried["queue_seen"] is False
 
 
 def test_completed_job_is_kept_while_its_file_still_exists(tmp_path):
@@ -237,7 +257,6 @@ def test_startup_moves_already_completed_flat_file_back_into_folder(tmp_path):
     job.update({
         "status": "completed",
         "storage": os.fspath(flat_media),
-        "queue_seen": True,
     })
     state.db.update_store("pkg-flat-completed", json.dumps(job))
 
@@ -285,7 +304,7 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     assert snapshot["queue"][0]["filename"] == "[Downloading] Fast S01E01"
     assert snapshot["queue"][0]["_source"] == "ytdlp"
 
-    job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024, queue_seen=True)
+    job.update(status="completed", storage="/output/Fast.S01E01", bytes_loaded=1024)
     state.db.update_store("pkg-fast", json.dumps(job))
     snapshotter.update_ytdlp_job(job)
     snapshot, _, _ = snapshotter.get()
@@ -302,7 +321,9 @@ def test_ytdlp_status_is_published_without_full_jdownloader_snapshot():
     assert snapshot["history"][0]["storage"] == "/"
 
 
-def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
+def test_completed_am_job_goes_directly_to_history_like_jdownloader():
+    """Un job terminé passe directement en history (comme JDownloader) : pas de
+    barrière "queue_seen" qui le laisserait stagner en queue côté Sonarr."""
     state = FakeState()
     job = enqueue_job(state, "pkg-instant", "Instant.S01E01", ["https://one"], "tt1", 450)
     job.update({
@@ -319,13 +340,7 @@ def test_completed_am_job_is_seen_in_queue_once_then_moves_to_history():
 
     snapshot, _, _ = snapshotter.get()
 
-    assert snapshot["queue"][0]["nzo_id"] == "pkg-instant"
-    assert snapshot["queue"][0]["percentage"] == 100
-    assert snapshot["history"] == []
-
-    mark_queue_seen(state, ["pkg-instant"])
-    snapshot, _, _ = snapshotter.get()
-
+    # Aucune apparition en queue : directement en history, prêt à l'import.
     assert snapshot["queue"] == []
     assert snapshot["history"][0]["nzo_id"] == "pkg-instant"
     assert snapshot["history"][0]["status"] == "Completed"

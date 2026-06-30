@@ -14,7 +14,6 @@ from xml.etree import ElementTree
 from bottle import abort, request
 
 from quasarr.downloads import download
-from quasarr.downloads.ytdlp_worker import mark_queue_seen
 from quasarr.downloads import packages
 from quasarr.downloads.packages import get_packages, delete_package
 from quasarr.downloads.packages.package_snapshot import public_download_slots
@@ -303,13 +302,7 @@ def setup_arr_routes(app):
 
                     packages = get_packages()
                     if mode == "queue":
-                        internal_slots = packages.get("queue", [])
-                        mark_queue_seen(
-                            shared_state,
-                            [slot.get("nzo_id") for slot in internal_slots
-                             if slot.get("_source") == "ytdlp" and slot.get("nzo_id")],
-                        )
-                        slots = public_download_slots(internal_slots)
+                        slots = public_download_slots(packages.get("queue", []))
                         payload = {
                             "queue": {
                                 "paused": False,
