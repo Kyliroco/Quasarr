@@ -59,6 +59,29 @@ def normalize_url(url: str) -> str:
 
     return url
 
+def _category_for_requester(user_agent):
+    """Catégorie attendue par le client *arr d'après son User-Agent.
+
+    Retourne None pour un client inconnu (on ne filtre alors rien, comportement
+    SABnzbd standard). Permet de n'envoyer à Sonarr que ses items ``tv``/``docs``
+    et à Radarr que ses ``movies``, plutôt que la file complète partagée.
+    """
+    ua = (user_agent or "").lower()
+    if "radarr" in ua:
+        return {"movies"}
+    if "lazylibrarian" in ua:
+        return {"docs"}
+    if "sonarr" in ua:
+        return {"tv", "docs"}
+    return None
+
+
+def _filter_slots_by_category(slots, categories, field):
+    if not categories:
+        return slots
+    return [slot for slot in slots if slot.get(field) in categories]
+
+
 def setup_arr_routes(app):
     @app.get('/download/')
     def fake_nzb_file():
@@ -301,8 +324,12 @@ def setup_arr_routes(app):
                         }
 
                     packages = get_packages()
+                    requester_cats = _category_for_requester(request.headers.get("User-Agent"))
                     if mode == "queue":
-                        slots = public_download_slots(packages.get("queue", []))
+                        slots = _filter_slots_by_category(
+                            public_download_slots(packages.get("queue", [])),
+                            requester_cats, "cat",
+                        )
                         payload = {
                             "queue": {
                                 "paused": False,
@@ -403,7 +430,10 @@ def setup_arr_routes(app):
                         payload = {
                             "history": {
                                 "paused": False,
-                                "slots": public_download_slots(packages.get("history", []))
+                                "slots": _filter_slots_by_category(
+                                    public_download_slots(packages.get("history", [])),
+                                    requester_cats, "category",
+                                )
                             }
                         }
                         record_sonarr_response(
