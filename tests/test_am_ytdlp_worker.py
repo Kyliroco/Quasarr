@@ -251,6 +251,32 @@ def test_handle_am_download_id_is_derived_from_embed(monkeypatch):
     assert state.get_db("ytdlp").retrieve(base) is None
 
 
+def test_rss_date_is_stable_within_day_for_blocklist_matching(monkeypatch):
+    """La pubDate d'une release doit être stable au fil des recherches d'une même
+    journée. Sinon Sonarr voit une release échouée/blacklistée comme "nouvelle"
+    au retry automatique et la re-grabbe (reproduit contre un vrai Sonarr)."""
+    import datetime as real_dt
+
+    class FakeDatetime:
+        current = real_dt.datetime(2026, 3, 4, 9, 30, 15, tzinfo=real_dt.timezone.utc)
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(am, "datetime", FakeDatetime)
+
+    first = am._rss_date()
+    FakeDatetime.current = real_dt.datetime(2026, 3, 4, 22, 47, 3, tzinfo=real_dt.timezone.utc)
+    later_same_day = am._rss_date()
+
+    assert first == later_same_day                 # stable within the day
+    assert first == "Wed, 04 Mar 2026 00:00:00 +0000"  # truncated to midnight
+
+    FakeDatetime.current = real_dt.datetime(2026, 3, 5, 1, 0, 0, tzinfo=real_dt.timezone.utc)
+    assert am._rss_date() != first                 # advances with the calendar day
+
+
 def test_completed_job_is_requeued_after_sonarr_moved_its_file(tmp_path):
     state = FakeState(str(tmp_path))
     first = enqueue_job(state, "pkg-retry", "Episode 1", ["https://old"], "tt1", 450)
