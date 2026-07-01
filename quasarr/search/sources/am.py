@@ -360,7 +360,20 @@ def _fetch_episodes(shared_state, am, slug, season_path, headers):
 
 
 def _rss_date():
-    return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+    """Date de publication *stable* pour une release (tronquée au jour).
+
+    Sonarr matche les releases usenet blacklistées en partie sur la date de
+    publication (court-circuit « pubDate identique → blacklisté »). Avec un
+    ``datetime.now()`` à la seconde, chaque recherche renvoyait une date
+    différente : une release échouée puis blacklistée réapparaissait avec une
+    « nouvelle » date et n'était pas reconnue, donc Sonarr la re-grabbait aussitôt
+    lors du retry automatique. En tronquant au jour, la même release garde la même
+    date d'une recherche à l'autre (fenêtre du retry = quelques secondes), ce qui
+    laisse la blocklist de Sonarr la rejeter. On reste sur la date du jour pour ne
+    jamais tomber sous une éventuelle limite de rétention.
+    """
+    midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight.strftime("%a, %d %b %Y %H:%M:%S +0000")
 
 
 def _build_release(shared_state, title, source, size_mb, imdb_id):
