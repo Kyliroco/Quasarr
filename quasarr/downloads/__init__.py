@@ -33,6 +33,26 @@ def _package_id(category, title, url):
     return f"SABnzbd_{category}_{digest}"
 
 
+def _am_package_id(base_package_id, title, candidates):
+    """nzo_id anime-sama basé sur l'URL d'embed *résolue*, pas la page de saison.
+
+    L'``url`` de la release anime-sama est la page ``.../saison1/vostfr/#episode=8
+    &player=Vidmoly`` : elle est stable même quand le lecteur est cassé
+    ("not found"). Un vrai client SABnzbd attribue un id unique par contenu ; ici
+    on veut la même propriété : tant que l'embed résolu ne change pas, l'id reste
+    identique (une re-tentative du même embed cassé garde donc l'entrée blacklistée
+    par Sonarr, inutile de re-tester le même fichier). Dès qu'anime-sama re-publie
+    l'épisode, l'URL d'embed change → nouvel id → Sonarr re-teste automatiquement.
+
+    On conserve le préfixe ``SABnzbd_<catégorie>`` de l'id de base et on ne
+    remplace que le digest, calculé sur ``title`` + les embeds résolus.
+    """
+    prefix = base_package_id.rsplit("_", 1)[0]  # "SABnzbd_<catégorie>"
+    key = "\0".join([title, *candidates])
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}_{digest}"
+
+
 def handle_unprotected(shared_state, title, password, package_id, imdb_id, url,
                        mirror=None, size_mb=None, links=None, func=None, label=""):
     if func:
@@ -156,9 +176,12 @@ def handle_am(shared_state, title, password, package_id, imdb_id, url, mirror, s
              reason=f'No playable anime-sama embed for "{title}" - "{url}"')
         return {"success": False, "title": title}
 
+    # Le nzo_id suit l'URL d'embed résolue (voir _am_package_id) : un épisode
+    # re-publié par anime-sama change d'URL → nouvel id → Sonarr re-teste.
+    package_id = _am_package_id(package_id, title, candidates)
     enqueue_job(shared_state, package_id, title, candidates, imdb_id, size_mb, source_url=url)
     send_discord_message(shared_state, title=title, case="unprotected", imdb_id=imdb_id, source=url)
-    return {"success": True, "title": title}
+    return {"success": True, "title": title, "package_id": package_id}
 
 
 def download(shared_state, request_from, title, url, mirror, size_mb, password, imdb_id=None):

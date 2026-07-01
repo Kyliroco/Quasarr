@@ -9,7 +9,7 @@ from quasarr.api.am_monitor import (
     get_sonarr_responses,
     record_sonarr_response,
 )
-from quasarr.downloads import _package_id
+from quasarr.downloads import _package_id, _am_package_id
 from quasarr.downloads.packages.package_snapshot import PackageSnapshotter, public_download_slots
 from quasarr.downloads.sources import am as download_am
 from quasarr.downloads.ytdlp_worker import (
@@ -202,6 +202,53 @@ def test_enqueue_clears_stale_failed_entry_for_same_package_id():
     # peuvent plus exposer le même id à Sonarr en même temps.
     assert state.get_db("failed").retrieve("pkg-dup") is None
     assert state.get_db("protected").retrieve("pkg-dup") is None
+
+
+def test_am_package_id_tracks_resolved_embed_url():
+    """L'id anime-sama suit l'URL d'embed résolue, pas la page de saison.
+
+    Un vrai Sonarr blackliste définitivement un nzo_id vu "Failed" et ignore
+    toute entrée de queue le réutilisant. En basant l'id sur l'embed résolu :
+    embed inchangé (cassé) → même id → reste blacklisté (pas de re-test inutile) ;
+    embed changé (épisode re-publié) → nouvel id → Sonarr re-teste."""
+    title = "Solo.Leveling.S01E08.VOSTFR.1080p.WEB.x264-ANIMESAMA.Vidmoly"
+    page_url = "https://anime-sama.to/catalogue/solo-leveling/saison1/vostfr/#episode=8&player=Vidmoly"
+    base = _package_id("tv", title, page_url)
+
+    id_a = _am_package_id(base, title, ["https://vidmoly.to/embed-AAA.html"])
+    id_b = _am_package_id(base, title, ["https://vidmoly.to/embed-BBB.html"])
+
+    # Le préfixe catégorie est conservé (le filtre Sonarr tv/docs passe toujours).
+    assert id_a.startswith("SABnzbd_tv_")
+    # Embed inchangé → id stable.
+    assert id_a == _am_package_id(base, title, ["https://vidmoly.to/embed-AAA.html"])
+    # Embed changé → id différent (nouvelle tentative visible côté Sonarr).
+    assert id_a != id_b
+    # Différent de l'id basé sur la page (URL stable même quand le lecteur casse).
+    assert id_a != base
+
+
+def test_handle_am_download_id_is_derived_from_embed(monkeypatch):
+    """handle_am enfile le job (et renvoie le nzo_id) sous l'id basé sur l'embed."""
+    from quasarr import downloads as dl
+
+    state = FakeState()
+    embed = "https://video.sibnet.ru/shell.php?videoid=42"
+    monkeypatch.setattr(dl, "get_am_download_links", lambda *a, **k: [embed])
+    monkeypatch.setattr(dl, "send_discord_message", lambda *a, **k: None)
+
+    title = "Show.S01E01.VOSTFR.1080p.WEB.x264-ANIMESAMA.Sibnet"
+    page_url = "https://anime-sama.to/catalogue/show/saison1/vostfr/#episode=1&player=Sibnet"
+    base = _package_id("tv", title, page_url)
+
+    result = dl.handle_am(state, title, "pw", base, "tt1", page_url, None, 450)
+
+    expected = _am_package_id(base, title, [embed])
+    assert result["success"] is True
+    assert result["package_id"] == expected
+    # Le job yt-dlp est indexé par l'id basé sur l'embed, pas par l'id de page.
+    assert state.get_db("ytdlp").retrieve(expected) is not None
+    assert state.get_db("ytdlp").retrieve(base) is None
 
 
 def test_completed_job_is_requeued_after_sonarr_moved_its_file(tmp_path):
