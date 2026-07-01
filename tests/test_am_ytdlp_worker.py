@@ -152,6 +152,49 @@ def test_am_page_load_uses_random_jitter(monkeypatch):
     assert calls == [("GET", "https://anime.invalid/page", {"timeout": 10})]
 
 
+def test_episode_label_parser_accepts_only_exact_episode_number():
+    assert am._strict_episode_number("EPISODE 8") == 8
+    assert am._strict_episode_number(" episode 12 ") == 12
+    assert am._strict_episode_number("EPISODE RÉCAPITULATIF") is None
+    assert am._strict_episode_number("EPISODE 8 RÉCAPITULATIF") is None
+    assert am._strict_episode_number("RÉCAPITULATIF EPISODE 8") is None
+    assert am._strict_episode_number("EPISODE 8.5") is None
+    assert am._strict_episode_number("8") is None
+
+
+def test_empty_player_entry_keeps_later_episode_indexes_stable():
+    eps = am._parse_episodes_js(
+        "var eps1 = ['https://video/episode-1', '', 'https://video/episode-3'];"
+    )
+
+    assert eps["eps1"] == [
+        "https://video/episode-1",
+        "",
+        "https://video/episode-3",
+    ]
+    assert am._candidates_for_index(eps, 1) == []
+    assert am._candidates_for_index(eps, 2) == ["https://video/episode-3"]
+
+
+def test_solo_leveling_recap_consumes_index_without_becoming_episode_8():
+    page = '''
+      <script>resetListe(); finirListe(1);</script>
+      <script>
+        resetListe();
+        creerListe(1, 7); newSP("Récapitulatif");
+        finirListe(8);
+      </script>
+    '''
+
+    mapping = am._parse_episode_index_map(page, total_items=13)
+
+    assert mapping == {
+        1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6,
+        8: 8, 9: 9, 10: 10, 11: 11, 12: 12,
+    }
+    assert 7 not in mapping.values()  # index 7 = épisode récapitulatif
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"
