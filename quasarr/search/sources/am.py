@@ -155,9 +155,63 @@ def _parse_episodes_js(text):
     for match in re.finditer(r"var\s+(eps\w+)\s*=\s*\[(.*?)\]", text, re.S):
         name = match.group(1)
         items = re.findall(r"'([^']*)'|\"([^\"]*)\"", match.group(2))
-        urls = [(a or b).strip() for a, b in items if (a or b).strip()]
-        if urls:
+        # Les entrées vides sont des positions d'épisode sans lien pour ce
+        # lecteur. Les supprimer décalerait tous les épisodes suivants.
+        urls = [(a or b).strip() for a, b in items]
+        if any(urls):
             result[name] = urls
+    return result
+
+
+def _strict_episode_number(label):
+    """Retourne X uniquement si le libellé complet est exactement ``EPISODE X``."""
+    match = re.fullmatch(r"EPISODE\s+([1-9]\d*)", str(label or "").strip(), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _parse_episode_index_map(page_text, total_items):
+    """Mappe le numéro affiché vers l'index des tableaux ``eps*``.
+
+    Anime-Sama construit la liste avec ``creerListe``, ``newSP`` et
+    ``finirListe``. Les ``newSP`` consomment bien un index vidéo mais ne sont
+    jamais considérés comme des épisodes, même si leur texte contient un nombre.
+    """
+    resets = list(re.finditer(r"resetListe\s*\(\s*\)\s*;?", page_text or "", re.I))
+    if not resets or total_items <= 0:
+        return {}
+    # Le dernier reset est la configuration finale de la page. Les appels plus
+    # haut sont le comportement générique remplacé ensuite par la liste spéciale.
+    script = (page_text or "")[resets[-1].end():]
+    call_re = re.compile(
+        r"creerListe\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
+        r"|finirListe\s*\(\s*(\d+)\s*\)"
+        r"|newSP\s*\(\s*(['\"])(.*?)\4\s*\)",
+        re.I | re.S,
+    )
+    labels = []
+    for call in call_re.finditer(script):
+        if len(labels) >= total_items:
+            break
+        if call.group(1) is not None:
+            start, end = int(call.group(1)), int(call.group(2))
+            if end >= start:
+                labels.extend(f"EPISODE {number}" for number in range(start, end + 1))
+        elif call.group(3) is not None:
+            number = int(call.group(3))
+            while len(labels) < total_items:
+                labels.append(f"EPISODE {number}")
+                number += 1
+        else:
+            # Un spécial occupe une position, mais son libellé ne doit surtout
+            # pas pouvoir satisfaire la regex stricte EPISODE X.
+            labels.append(f"SPECIAL {call.group(5) or ''}")
+
+    labels = labels[:total_items]
+    result = {}
+    for index, label in enumerate(labels):
+        episode = _strict_episode_number(label)
+        if episode is not None and episode not in result:
+            result[episode] = index
     return result
 
 
@@ -351,12 +405,29 @@ def _fetch_episodes(shared_state, am, slug, season_path, headers):
         response = _am_request("GET", url, headers=headers, timeout=10)
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load {url}: {exc}")
-        return {}, am
+        return {}, {}, am
     am = _update_hostname(shared_state, am, response.url)
     if response.status_code != 200:
         debug(f"{hostname.upper()} episodes.js {url} returned HTTP {response.status_code}")
-        return {}, am
-    return _parse_episodes_js(response.text), am
+        return {}, {}, am
+    eps_map = _parse_episodes_js(response.text)
+    if not eps_map:
+        return {}, {}, am
+
+    page_url = f"https://{am}/catalogue/{slug}/{season_path}/"
+    try:
+        page_response = _am_request("GET", page_url, headers=headers, timeout=10)
+        am = _update_hostname(shared_state, am, page_response.url)
+    except Exception as exc:
+        debug(f"{hostname.upper()} failed to load episode labels {page_url}: {exc}")
+        return eps_map, {}, am
+    if page_response.status_code != 200:
+        debug(f"{hostname.upper()} episode labels {page_url} returned HTTP {page_response.status_code}")
+        return eps_map, {}, am
+
+    longest = max(len(urls) for urls in eps_map.values())
+    episode_indices = _parse_episode_index_map(page_response.text, longest)
+    return eps_map, episode_indices, am
 
 
 def _rss_date():
@@ -505,7 +576,9 @@ def am_search(shared_state, start_time, request_from, search_string,
     release_suffix = f"{language_tag}.{RELEASE_QUALITY}"
     debug(f"{hostname.upper()} using {season_path} (lang={language}) for {slug}")
 
-    eps_map, am = _fetch_episodes(shared_state, am, slug, season_path, headers)
+    eps_map, episode_indices, am = _fetch_episodes(
+        shared_state, am, slug, season_path, headers
+    )
     if not eps_map:
         debug(f"{hostname.upper()} episodes.js empty for {slug}/{season_path}")
         return releases
@@ -552,7 +625,7 @@ def am_search(shared_state, start_time, request_from, search_string,
             if episode_num is not None:
                 episode_plan = [(episode_num, episode_num)]
             else:
-                episode_plan = [(e, e) for e in range(1, longest + 1)]
+                episode_plan = [(e, e) for e in sorted(episode_indices)]
         else:
             if episode_num is not None:
                 anime_ep = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
@@ -565,7 +638,12 @@ def am_search(shared_state, start_time, request_from, search_string,
             debug(f"{hostname.upper()} absolute mapping {slug} S{season_num}: {episode_plan[:5]}...")
 
         for ep, anime_ep in episode_plan:
-            candidates = _candidates_for_index(eps_map, anime_ep - 1)
+            source_index = episode_indices.get(anime_ep)
+            if source_index is None:
+                debug(f"{hostname.upper()} ignored non-exact or missing EPISODE {anime_ep} "
+                      f"for {slug}/{season_path}")
+                continue
+            candidates = _candidates_for_index(eps_map, source_index)
             if not candidates:
                 continue
             tag = f"S{season_for_tag:02d}E{ep:02d}"
@@ -575,7 +653,7 @@ def am_search(shared_state, start_time, request_from, search_string,
                 register_player(shared_state, host_tag, slug, season_for_tag, ep)
                 if not is_player_enabled(shared_state, host_tag):
                     continue
-                source = f"{base_source}#episode={anime_ep}&player={host_tag}"
+                source = f"{base_source}#episode={source_index + 1}&player={host_tag}"
                 for name in names:
                     dotted = _dotted_title(name)
                     if not dotted:
