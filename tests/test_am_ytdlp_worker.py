@@ -221,6 +221,62 @@ def test_commented_episode_list_example_cannot_replace_real_configuration():
     }
 
 
+def test_imdb_confirmed_episode_overflows_into_next_anime_sama_folder(monkeypatch):
+    first_eps = {"eps1": [f"https://first/{number}" for number in range(1, 13)]}
+    second_eps = {"eps1": [f"https://second/{number}" for number in range(1, 13)]}
+    indices = {number: number - 1 for number in range(1, 13)}
+    declarations = [
+        ("Saison 1", "saison1/vostfr"),
+        ("Saison 2", "saison2/vostfr"),
+    ]
+    monkeypatch.setattr(
+        am,
+        "_absolute_season_plan",
+        lambda _state, imdb_id, season: (
+            [(number, number) for number in range(1, 25)]
+            if (imdb_id, season) == ("tt5095466", 1) else []
+        ),
+    )
+    monkeypatch.setattr(
+        am,
+        "_fetch_episodes",
+        lambda *_args: (second_eps, indices, "anime-sama.to"),
+    )
+
+    resolved = am._find_overflow_episode_source(
+        object(), "tt5095466", 1, 13,
+        declarations, "vostfr", "saison1/vostfr",
+        first_eps, indices, "anime-sama.to", "gakusen-toshi-asterisk", {},
+    )
+
+    path, eps_map, episode_indices, local_episode, host = resolved
+    assert path == "saison2/vostfr"
+    assert eps_map == second_eps
+    assert episode_indices == indices
+    assert local_episode == 1
+    assert host == "anime-sama.to"
+
+    resolved_last = am._find_overflow_episode_source(
+        object(), "tt5095466", 1, 24,
+        declarations, "vostfr", "saison1/vostfr",
+        first_eps, indices, "anime-sama.to", "gakusen-toshi-asterisk", {},
+    )
+    assert resolved_last[0] == "saison2/vostfr"
+    assert resolved_last[3] == 12
+
+
+def test_overflow_is_rejected_when_imdb_metadata_has_no_requested_episode(monkeypatch):
+    monkeypatch.setattr(am, "_absolute_season_plan", lambda *_args: [(number, number) for number in range(1, 13)])
+
+    assert am._find_overflow_episode_source(
+        object(), "tt-example", 1, 13,
+        [("Saison 1", "saison1/vostfr"), ("Saison 2", "saison2/vostfr")],
+        "vostfr", "saison1/vostfr",
+        {"eps1": ["url"] * 12}, {number: number - 1 for number in range(1, 13)},
+        "anime-sama.to", "show", {},
+    ) is None
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"
