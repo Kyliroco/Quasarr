@@ -534,6 +534,56 @@ def _absolute_season_plan(shared_state, imdb_id, season_num):
     return []
 
 
+def _numbered_season_paths(declarations, language):
+    """Retourne les dossiers saison d'une langue triés numériquement."""
+    paths = []
+    pattern = re.compile(rf"^saison(\d+)/{re.escape(language)}$", re.I)
+    for _label, path in declarations or []:
+        match = pattern.fullmatch(path)
+        if match:
+            paths.append((int(match.group(1)), path))
+    return [path for _number, path in sorted(paths)]
+
+
+def _find_overflow_episode_source(shared_state, imdb_id, season_num, episode_num,
+                                  declarations, language, selected_path,
+                                  selected_eps, selected_indices,
+                                  am, slug, headers):
+    """Suit les dossiers Anime-Sama quand une saison Sonarr les regroupe.
+
+    Exemple : TheTVDB/IMDb expose Asterisk War en S01E01-24 tandis
+    qu'Anime-Sama utilise saison1/E01-12 puis saison2/E01-12.
+    """
+    metadata_plan = _absolute_season_plan(shared_state, imdb_id, season_num)
+    if episode_num not in {episode for episode, _absolute in metadata_plan}:
+        return None
+
+    paths = _numbered_season_paths(declarations, language)
+    try:
+        start = paths.index(selected_path)
+    except ValueError:
+        return None
+
+    remaining = episode_num
+    current_am = am
+    for path in paths[start:]:
+        if path == selected_path:
+            eps_map, episode_indices = selected_eps, selected_indices
+        else:
+            eps_map, episode_indices, current_am = _fetch_episodes(
+                shared_state, current_am, slug, path, headers
+            )
+        count = len(episode_indices)
+        if not eps_map or not count:
+            return None  # impossible de calculer un décalage fiable
+        if remaining in episode_indices:
+            return path, eps_map, episode_indices, remaining, current_am
+        remaining -= count
+        if remaining <= 0:
+            return None
+    return None
+
+
 def am_search(shared_state, start_time, request_from, search_string,
               mirror=None, season=None, episode=None):
     releases = []
@@ -625,10 +675,26 @@ def am_search(shared_state, start_time, request_from, search_string,
         # episode_plan = [(épisode_Sonarr, numéro_anime_sama), ...]
         requested_path = f"saison{season_num}/{language}" if season_num is not None else None
         aligned = (requested_path is None) or (season_path.lower() == requested_path)
+        overflow_episode = None
+
+        if aligned and season_num is not None and episode_num is not None \
+                and episode_num not in episode_indices:
+            overflow = _find_overflow_episode_source(
+                shared_state, imdb_id, season_num, episode_num,
+                declarations, language, season_path,
+                eps_map, episode_indices, am, slug, headers,
+            )
+            if overflow:
+                season_path, eps_map, episode_indices, overflow_episode, am = overflow
+                longest = max(len(urls) for urls in eps_map.values())
+                base_source = f"https://{am}/catalogue/{slug}/{season_path}/"
+                debug(f"{hostname.upper()} IMDb overflow mapping {slug} "
+                      f"S{season_num:02d}E{episode_num:02d} -> "
+                      f"{season_path} EPISODE {overflow_episode}")
 
         if aligned:
             if episode_num is not None:
-                episode_plan = [(episode_num, episode_num)]
+                episode_plan = [(episode_num, overflow_episode or episode_num)]
             else:
                 episode_plan = [(e, e) for e in sorted(episode_indices)]
         else:
