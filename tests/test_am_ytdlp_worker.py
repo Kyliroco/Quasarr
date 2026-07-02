@@ -195,6 +195,32 @@ def test_solo_leveling_recap_consumes_index_without_becoming_episode_8():
     assert 7 not in mapping.values()  # index 7 = épisode récapitulatif
 
 
+def test_commented_episode_list_example_cannot_replace_real_configuration():
+    page = '''
+      <script>
+        resetListe();
+        finirListe(1);
+      </script>
+      <!--
+        template:
+        resetListe();
+        creerListe(debut, fin); newSP(special);
+        finirListe(debut de la fin);
+      -->
+      <script>
+        /*
+          resetListe();
+          creerListe(debut, fin);
+          finirListe(debut de la fin);
+        */
+      </script>
+    '''
+
+    assert am._parse_episode_index_map(page, total_items=4) == {
+        1: 0, 2: 1, 3: 2, 4: 3,
+    }
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"

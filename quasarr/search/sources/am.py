@@ -176,12 +176,17 @@ def _parse_episode_index_map(page_text, total_items):
     ``finirListe``. Les ``newSP`` consomment bien un index vidéo mais ne sont
     jamais considérés comme des épisodes, même si leur texte contient un nombre.
     """
-    resets = list(re.finditer(r"resetListe\s*\(\s*\)\s*;?", page_text or "", re.I))
+    # Les pages contiennent des blocs d'exemple commentés avec de faux
+    # resetListe/creerListe/finirListe. Ils ne doivent jamais remplacer la
+    # configuration réellement exécutée (cas Assassination Classroom).
+    executable_text = re.sub(r"<!--.*?-->", "", page_text or "", flags=re.S)
+    executable_text = re.sub(r"/\*.*?\*/", "", executable_text, flags=re.S)
+    resets = list(re.finditer(r"resetListe\s*\(\s*\)\s*;?", executable_text, re.I))
     if not resets or total_items <= 0:
         return {}
     # Le dernier reset est la configuration finale de la page. Les appels plus
     # haut sont le comportement générique remplacé ensuite par la liste spéciale.
-    script = (page_text or "")[resets[-1].end():]
+    script = executable_text[resets[-1].end():]
     call_re = re.compile(
         r"creerListe\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)"
         r"|finirListe\s*\(\s*(\d+)\s*\)"
