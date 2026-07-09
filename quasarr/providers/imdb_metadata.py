@@ -185,6 +185,29 @@ def get_romaji_title(shared_state, imdb_id):
     return None
 
 
+def get_year(shared_state, imdb_id):
+    """Année de sortie (int) via TMDB, ou None si indisponible.
+
+    Injectée dans le titre de release pour lever l'ambiguïté quand plusieurs
+    œuvres partagent le même nom. Sans millésime, Sonarr rattache une release
+    « Island » à l'alias de scene mapping de la série TVDB 397727 (drama coréen
+    2022) au lieu de l'anime 346799 (2018) : le scene mapping est consulté
+    *avant* le titre et l'ID, et gagne toujours. En ajoutant l'année, le
+    CleanTitle vu par Sonarr devient « island2018 », qui n'existe pas comme clé
+    de scene mapping ; le mapping est donc court-circuité et le match par
+    titre+année / ID rattache la bonne série.
+    """
+    result, media_type = _tmdb_find(imdb_id)
+    if not result:
+        return None
+
+    raw = result.get('first_air_date') if media_type == 'tv' else result.get('release_date')
+    if not raw or len(raw) < 4 or not raw[:4].isdigit():
+        debug(f"TMDB: no usable release year for {imdb_id}", source="tmdb")
+        return None
+    return int(raw[:4])
+
+
 def get_type(shared_state, imdb_id, language='fr'):
     locale = _LANG_TO_LOCALE.get(language, f'{language}-{language.upper()}')
     result, _ = _tmdb_find(imdb_id, language=locale)

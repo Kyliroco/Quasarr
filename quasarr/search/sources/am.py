@@ -31,6 +31,7 @@ from quasarr.providers.imdb_metadata import (
     get_localized_title,
     get_romaji_title,
     get_season_episode_counts,
+    get_year,
 )
 from quasarr.providers.tvdb_metadata import (
     get_absolute_number as tvdb_absolute_number,
@@ -112,6 +113,26 @@ def _dotted_title(text):
     normalized = normalized.replace("&", "and")
     normalized = re.sub(r"[^A-Za-z0-9]+", ".", normalized)
     return normalized.strip(".")
+
+
+def _release_title(dotted, year, tag, release_suffix, host_tag):
+    """Assemble un nom de release pointé, année incluse pour lever l'ambiguïté.
+
+    ``Island`` + 2018 + ``S01E01`` -> ``Island.2018.S01E01.<suffix>.<host>``.
+    L'année placée juste après le titre force Sonarr/Radarr à lire un CleanTitle
+    « island2018 » : il n'existe aucune clé de scene mapping à ce nom, donc
+    l'alias d'une autre œuvre homonyme (ex. drama TVDB 397727) ne peut plus
+    détourner la release vers la mauvaise série. ``tag`` est le SxxExx (None pour
+    un film). Voir ``imdb_metadata.get_year`` pour le détail du problème.
+    """
+    parts = [dotted]
+    if year:
+        parts.append(str(year))
+    if tag:
+        parts.append(tag)
+    parts.append(release_suffix)
+    parts.append(host_tag)
+    return ".".join(parts)
 
 
 def _host_of(url):
@@ -378,7 +399,13 @@ def _season_path_for_language(declarations, is_movie, season_num, lang):
                 return path
         return None
 
-    saisons = [p for p in matching if p.lower().startswith("saison")]
+    # Uniquement les dossiers « saisonN » réellement numérotés. Le
+    # ``startswith("saison")`` naïf attrapait aussi les hors-séries type
+    # « saison1hs » (Fairy Tail : 100 Years Quest) : leur présence faisait
+    # croire à plusieurs saisons et cassait le repli absolu ci-dessous. On
+    # s'aligne sur le motif strict de ``_numbered_season_paths``.
+    season_re = re.compile(rf"saison\d+/{re.escape(lang)}", re.I)
+    saisons = [p for p in matching if season_re.fullmatch(p)]
     if not saisons:
         return None
 
@@ -388,8 +415,9 @@ def _season_path_for_language(declarations, is_movie, season_num, lang):
             if path.lower() == want:
                 return path
         # Saison demandée absente : repli "absolu" seulement s'il n'y a qu'un
-        # seul dossier saison (cas Fairy Tail : tout en saison1). Sinon on laisse
-        # tomber cette langue (une autre langue a peut-être la bonne saison).
+        # seul dossier saison (cas Fairy Tail : tout en saison1, la conversion
+        # S/E → numéro absolu prend le relais). Sinon on laisse tomber cette
+        # langue (une autre langue a peut-être la bonne saison).
         return saisons[0] if len(saisons) == 1 else None
 
     return saisons[0]
@@ -614,6 +642,11 @@ def am_search(shared_state, start_time, request_from, search_string,
         info(f"{hostname.upper()} could not resolve a title for {imdb_id}.")
         return releases
 
+    # Millésime injecté dans chaque titre de release : lève l'ambiguïté entre
+    # œuvres homonymes et court-circuite un scene mapping Sonarr détourné vers
+    # une autre série (cf. get_year / _release_title).
+    year = get_year(shared_state, imdb_id)
+
     slug, declarations, am = _resolve_slug(shared_state, am, names, headers)
     if not slug:
         debug(f"{hostname.upper()} no anime-sama entry found for {names!r}.")
@@ -658,7 +691,7 @@ def am_search(shared_state, start_time, request_from, search_string,
                 dotted = _dotted_title(name)
                 if not dotted:
                     continue
-                title = f"{dotted}.{release_suffix}.{host_tag}"
+                title = _release_title(dotted, year, None, release_suffix, host_tag)
                 if title in seen_titles:
                     continue
                 seen_titles.add(title)
@@ -729,7 +762,7 @@ def am_search(shared_state, start_time, request_from, search_string,
                     dotted = _dotted_title(name)
                     if not dotted:
                         continue
-                    title = f"{dotted}.{tag}.{release_suffix}.{host_tag}"
+                    title = _release_title(dotted, year, tag, release_suffix, host_tag)
                     if title in seen_titles:
                         continue
                     seen_titles.add(title)

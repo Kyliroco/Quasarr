@@ -162,6 +162,81 @@ def test_episode_label_parser_accepts_only_exact_episode_number():
     assert am._strict_episode_number("8") is None
 
 
+def test_release_title_inserts_year_to_defeat_homonym_alias():
+    # « Island » (anime, TVDB 346799) partage son nom avec un drama coréen
+    # (TVDB 397727) dont l'alias de scene mapping détournait la release. En
+    # plaçant l'année juste après le titre, Sonarr lit un CleanTitle
+    # « island2018 » : aucune clé de scene mapping ne correspond, le mapping est
+    # court-circuité et la release retombe sur la bonne série.
+    assert am._release_title(
+        "Island", 2018, "S01E01", "VOSTFR.1080p.WEB.x264-ANIMESAMA", "Sendvid"
+    ) == "Island.2018.S01E01.VOSTFR.1080p.WEB.x264-ANIMESAMA.Sendvid"
+
+
+def test_release_title_year_optional_for_films_and_missing_metadata():
+    # Film : pas de tag SxxExx, mais l'année reste insérée.
+    assert am._release_title("Island", 2018, None, "VOSTFR.1080p", "Sendvid") \
+        == "Island.2018.VOSTFR.1080p.Sendvid"
+    # Année introuvable (TMDB muet) : on conserve l'ancien format sans millésime.
+    assert am._release_title("Island", None, "S01E01", "VOSTFR.1080p", "Sendvid") \
+        == "Island.S01E01.VOSTFR.1080p.Sendvid"
+
+
+def test_get_year_reads_tmdb_air_or_release_date(monkeypatch):
+    from quasarr.providers import imdb_metadata
+
+    monkeypatch.setattr(imdb_metadata, "_tmdb_find",
+                        lambda imdb_id, language='fr-FR': ({"first_air_date": "2018-07-06"}, "tv"))
+    assert imdb_metadata.get_year(None, "tt8737996") == 2018
+
+    monkeypatch.setattr(imdb_metadata, "_tmdb_find",
+                        lambda imdb_id, language='fr-FR': ({"release_date": "1999-03-31"}, "movie"))
+    assert imdb_metadata.get_year(None, "tt0000001") == 1999
+
+    # Date absente ou résultat vide -> None (le titre reste sans année).
+    monkeypatch.setattr(imdb_metadata, "_tmdb_find",
+                        lambda imdb_id, language='fr-FR': ({"first_air_date": ""}, "tv"))
+    assert imdb_metadata.get_year(None, "tt0000002") is None
+
+    monkeypatch.setattr(imdb_metadata, "_tmdb_find",
+                        lambda imdb_id, language='fr-FR': (None, None))
+    assert imdb_metadata.get_year(None, "tt0000003") is None
+
+
+def test_fairy_tail_hors_serie_folder_does_not_block_absolute_fallback():
+    # Layout réel d'anime-sama pour Fairy Tail : une seule saison numérotée
+    # (« saison1 », qui contient les 328 épisodes en absolu) plus des dossiers
+    # annexes, dont « saison1hs » (100 Years Quest). Ce dernier commence par
+    # « saison » mais n'est PAS une saison numérotée : il ne doit pas empêcher
+    # le repli vers le dossier unique pour une saison Sonarr absente.
+    declarations = [
+        ("Saison 1", "saison1/vostfr"),
+        ("Film", "film/vostfr"),
+        ("OAV", "oav/vostfr"),
+        ("100 Years Quest Saison 1", "saison1hs/vostfr"),
+        ("Kai", "kai/vostfr"),
+    ]
+
+    # Saison présente telle quelle -> dossier exact.
+    assert am._season_path_for_language(declarations, False, 1, "vostfr") == "saison1/vostfr"
+    # Saison 5 (Sonarr) absente comme dossier -> repli sur l'unique saison
+    # numérotée ; la conversion S/E -> absolu fera le reste.
+    assert am._season_path_for_language(declarations, False, 5, "vostfr") == "saison1/vostfr"
+    assert am._select_season_path(declarations, False, 5) == ("saison1/vostfr", "vostfr")
+
+
+def test_multiple_real_seasons_do_not_fall_back_to_wrong_folder():
+    # Quand anime-sama expose bien plusieurs saisons numérotées, une saison
+    # demandée mais absente ne doit PAS être devinée (une autre langue peut
+    # l'avoir) : on ne retombe sur le dossier unique que s'il n'y en a qu'un.
+    declarations = [
+        ("Saison 1", "saison1/vostfr"),
+        ("Saison 2", "saison2/vostfr"),
+    ]
+    assert am._season_path_for_language(declarations, False, 2, "vostfr") == "saison2/vostfr"
+    assert am._season_path_for_language(declarations, False, 5, "vostfr") is None
+
+
 def test_empty_player_entry_keeps_later_episode_indexes_stable():
     eps = am._parse_episodes_js(
         "var eps1 = ['https://video/episode-1', '', 'https://video/episode-3'];"
