@@ -26,6 +26,55 @@ DEFAULT_OUTPUT_DIR = "/output"
 MIN_INTER_JOB_DELAY = 0.8
 MAX_INTER_JOB_DELAY = 5.0
 
+# HTTP 429 (anime-sama nous limite quand on télécharge trop vite). Ce n'est pas
+# un échec du lecteur : on met la file en pause puis on réessaie le MÊME lien.
+# Comme le worker est mono-thread et bloquant, cette pause tient toute la file
+# (aucun autre téléchargement ne démarre) et le job reste « en cours » côté
+# Sonarr — on ne le marque jamais "failed", donc pas de blacklist/relance. On
+# n'abandonne qu'après RATE_LIMIT_MAX_RETRIES cycles pour ne pas bloquer la file
+# indéfiniment si l'hébergeur nous banni durablement.
+RATE_LIMIT_BACKOFF_SECONDS = 600  # ~10 minutes
+RATE_LIMIT_MAX_RETRIES = 6
+
+
+def _is_rate_limited(exc):
+    """Vrai si l'exception yt-dlp correspond à un HTTP 429 (Too Many Requests)."""
+    lowered = str(exc).lower()
+    return ("too many requests" in lowered
+            or "http error 429" in lowered
+            or "error 429" in lowered)
+
+
+def get_rate_limit_backoff_seconds(shared_state):
+    """Durée de pause (secondes) après un HTTP 429, réglable via l'UI en minutes.
+
+    Vide / invalide / <= 0 -> défaut ``RATE_LIMIT_BACKOFF_SECONDS`` (~10 min).
+    """
+    raw = shared_state.values["config"]("YTDLP").get("rate_limit_backoff_minutes")
+    try:
+        minutes = float(str(raw).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return RATE_LIMIT_BACKOFF_SECONDS
+    if minutes <= 0:
+        return RATE_LIMIT_BACKOFF_SECONDS
+    return int(minutes * 60)
+
+
+def get_rate_limit_max_retries(shared_state):
+    """Nombre de cycles de réessai après un 429, réglable via l'UI.
+
+    Vide / invalide / < 0 -> défaut ``RATE_LIMIT_MAX_RETRIES``. La valeur 0 est
+    valide et signifie « ne jamais réessayer » (échec immédiat comme avant).
+    """
+    raw = shared_state.values["config"]("YTDLP").get("rate_limit_max_retries")
+    try:
+        retries = int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return RATE_LIMIT_MAX_RETRIES
+    if retries < 0:
+        return RATE_LIMIT_MAX_RETRIES
+    return retries
+
 
 def get_output_dir(shared_state):
     """Dossier de sortie yt-dlp (configurable via l'UI, défaut ``/output``)."""
@@ -448,6 +497,10 @@ class YtdlpWorker:
         from quasarr.providers.players import record_player_speed
         from quasarr.search.sources.am import _host_tag
 
+        # Temporisation 429 réglable via l'UI (défauts si non configurée).
+        rate_limit_backoff = get_rate_limit_backoff_seconds(self.shared_state)
+        rate_limit_max_retries = get_rate_limit_max_retries(self.shared_state)
+
         candidates = job.get("candidates", [])
         last_error = ""
         start_index = max(0, min(int(job.get("candidate_index") or 0), len(candidates)))
@@ -475,7 +528,11 @@ class YtdlpWorker:
                 }
 
             candidate_error = None
-            for attempt in range(1, 4):
+            attempt = 0
+            rate_limit_retries = 0
+            stopped_during_backoff = False
+            while True:
+                attempt += 1
                 try:
                     with yt_dlp.YoutubeDL(candidate_opts) as ydl:
                         ydl.download([link])
@@ -483,12 +540,51 @@ class YtdlpWorker:
                     break
                 except Exception as exc:
                     candidate_error = exc
-                    if not is_sibnet or "403" not in str(exc) or attempt >= 3:
-                        break
-                    delay = self._random_uniform(MIN_INTER_JOB_DELAY, MAX_INTER_JOB_DELAY)
-                    info(f'[yt-dlp] Sibnet HTTP 403, retry {attempt}/3 in {delay:.2f}s')
-                    if self._stop.wait(delay):
-                        break
+
+                    # HTTP 429 : on NE marque pas l'échec (sinon Sonarr
+                    # blackliste et relance aussitôt). On tient la file ~10 min
+                    # — worker mono-thread, donc aucun autre téléchargement ne
+                    # démarre — puis on réessaie le même lecteur. Le job reste
+                    # "downloading" (visible en file, pas en échec).
+                    if _is_rate_limited(exc) and rate_limit_retries < rate_limit_max_retries:
+                        rate_limit_retries += 1
+                        job["rate_limited"] = True
+                        job["rate_limited_since"] = int(time.time())
+                        job["speed_bps"] = 0
+                        job["updated_at"] = int(time.time())
+                        self._save(job)
+                        info(
+                            f'[yt-dlp] HTTP 429 for "{title}"; holding the queue for '
+                            f'{rate_limit_backoff}s then retrying the same player '
+                            f'({rate_limit_retries}/{rate_limit_max_retries}) — '
+                            f'no Sonarr failure raised'
+                        )
+                        if self._stop.wait(rate_limit_backoff):
+                            stopped_during_backoff = True
+                            break
+                        continue
+
+                    # Sibnet renvoie parfois un 403 transitoire : quelques
+                    # essais rapprochés suffisent en général.
+                    if is_sibnet and "403" in str(exc) and attempt < 3:
+                        delay = self._random_uniform(MIN_INTER_JOB_DELAY, MAX_INTER_JOB_DELAY)
+                        info(f'[yt-dlp] Sibnet HTTP 403, retry {attempt}/3 in {delay:.2f}s')
+                        if self._stop.wait(delay):
+                            stopped_during_backoff = True
+                            break
+                        continue
+
+                    break
+
+            if stopped_during_backoff:
+                # Arrêt du worker demandé pendant une pause : on laisse le job
+                # tel quel (status "downloading"). Il repart en "queued" au
+                # prochain démarrage (_reset_orphans), sans jamais être en échec.
+                return
+
+            # Reprise réussie (ou échec non lié au 429) : on nettoie le marqueur.
+            job.pop("rate_limited", None)
+            job.pop("rate_limited_since", None)
 
             if candidate_error is not None:
                 exc = candidate_error

@@ -43,6 +43,8 @@ class Config(object):
         'YTDLP': [
             ("output_dir", "str", ""),
             ("max_speed_mbps", "str", ""),
+            ("rate_limit_backoff_minutes", "str", ""),
+            ("rate_limit_max_retries", "str", ""),
         ],
         'FlareSolverr': [
             ("url", "str", ""),

@@ -30,12 +30,19 @@ def setup_config(app, shared_state):
 
     @app.get('/ytdlp')
     def ytdlp_ui():
-        from quasarr.downloads.ytdlp_worker import get_output_dir, get_max_speed_bps
+        from quasarr.downloads.ytdlp_worker import (
+            get_output_dir, get_max_speed_bps,
+            get_rate_limit_backoff_seconds, get_rate_limit_max_retries,
+        )
         current = Config('YTDLP').get('output_dir') or ''
         effective = get_output_dir(shared_state)
         current_speed = Config('YTDLP').get('max_speed_mbps') or ''
         max_speed_bps = get_max_speed_bps(shared_state)
         speed_state = f"{max_speed_bps / (1024 * 1024):.2f} MB/s" if max_speed_bps else "unlimited"
+        current_backoff = Config('YTDLP').get('rate_limit_backoff_minutes') or ''
+        current_retries = Config('YTDLP').get('rate_limit_max_retries') or ''
+        backoff_state = f"{get_rate_limit_backoff_seconds(shared_state) / 60:.0f} min"
+        retries_state = str(get_rate_limit_max_retries(shared_state))
         form = f'''
         <p>Folder where yt-dlp (anime-sama) saves finished files. Radarr/Sonarr import
         from here, so it must be reachable by them (mind Docker path mappings).</p>
@@ -46,9 +53,18 @@ def setup_config(app, shared_state):
             <label for="max_speed_mbps">Max download speed (MB/s, empty = unlimited)</label>
             <input type="text" id="max_speed_mbps" name="max_speed_mbps"
                    placeholder="unlimited" autocorrect="off" autocomplete="off" value="{current_speed}"><br>
+            <label for="rate_limit_backoff_minutes">On HTTP 429 (rate limit): wait this many minutes, then retry the
+                same player. The queue is held during the wait and no Sonarr failure is raised (empty = 10)</label>
+            <input type="text" id="rate_limit_backoff_minutes" name="rate_limit_backoff_minutes"
+                   placeholder="10" autocorrect="off" autocomplete="off" value="{current_backoff}"><br>
+            <label for="rate_limit_max_retries">On HTTP 429: number of wait-and-retry cycles before giving up
+                (empty = 6, 0 = fail immediately)</label>
+            <input type="text" id="rate_limit_max_retries" name="rate_limit_max_retries"
+                   placeholder="6" autocorrect="off" autocomplete="off" value="{current_retries}"><br>
             {render_button("Save", "primary", {"type": "submit"})}
         </form>
-        <p>Currently effective: folder <code>{effective}</code>, speed <code>{speed_state}</code></p>
+        <p>Currently effective: folder <code>{effective}</code>, speed <code>{speed_state}</code>,
+        429 back-off <code>{backoff_state}</code> × <code>{retries_state}</code> retries</p>
 
         <hr>
         <p><strong>Maintenance</strong></p>
@@ -69,12 +85,17 @@ def setup_config(app, shared_state):
     def ytdlp_api():
         output_dir = (request.forms.get('output_dir') or '').strip()
         max_speed = (request.forms.get('max_speed_mbps') or '').strip()
+        backoff = (request.forms.get('rate_limit_backoff_minutes') or '').strip()
+        retries = (request.forms.get('rate_limit_max_retries') or '').strip()
         Config('YTDLP').save('output_dir', output_dir)
         Config('YTDLP').save('max_speed_mbps', max_speed)
+        Config('YTDLP').save('rate_limit_backoff_minutes', backoff)
+        Config('YTDLP').save('rate_limit_max_retries', retries)
         speed_msg = f"max speed {max_speed} MB/s" if max_speed else "unlimited speed"
+        backoff_msg = f"429 back-off {backoff or '10'} min x {retries or '6'} retries"
         if output_dir:
-            return render_success(f'yt-dlp set: folder "{output_dir}", {speed_msg}', 3)
-        return render_success(f'yt-dlp set: default folder, {speed_msg}', 3)
+            return render_success(f'yt-dlp set: folder "{output_dir}", {speed_msg}, {backoff_msg}', 3)
+        return render_success(f'yt-dlp set: default folder, {speed_msg}, {backoff_msg}', 3)
 
     @app.post('/api/ytdlp/clear')
     def ytdlp_clear_api():
