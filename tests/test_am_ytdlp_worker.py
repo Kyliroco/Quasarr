@@ -1069,3 +1069,83 @@ def test_http_429_gives_up_after_max_retries_to_avoid_stuck_queue(tmp_path, monk
     assert failed["status"] == "failed"
     assert fake_stop.waits.count(RATE_LIMIT_BACKOFF_SECONDS) == RATE_LIMIT_MAX_RETRIES
     assert "429" in failed["error"] or "Too Many Requests" in failed["error"]
+
+
+def test_iframe_rewrite_rules_extract_vidmoly_domain_swap():
+    # La règle vidmoly.(to|net) -> vidmoly.biz déclarée par anime-sama doit être
+    # extraite puis appliquée ; les autres hôtes restent intacts.
+    videos_js = (
+        "function replaceVidmoly(url) {\n"
+        "  return url.replace(/vidmoly\\.(to|net)/g, 'vidmoly.biz');\n"
+        "}\n"
+        "const proto = HTMLIFrameElement.prototype;\n"
+        "x = replaceVidmoly(value);\n"
+    )
+    rules = download_am._parse_iframe_rewrite_rules(videos_js)
+    assert download_am._apply_rewrite_rules(
+        ["https://vidmoly.to/embed-abc.html",
+         "https://vidmoly.net/embed-def.html",
+         "https://sendvid.com/embed/x"],
+        rules,
+    ) == [
+        "https://vidmoly.biz/embed-abc.html",
+        "https://vidmoly.biz/embed-def.html",
+        "https://sendvid.com/embed/x",
+    ]
+
+
+def test_vidmoly_to_link_is_rewritten_to_biz_before_download(monkeypatch):
+    # Bug réel (Fire Force S2E3, lecteur Vidmoly) : anime-sama sert vidmoly.to
+    # (qui redirige vers des pubs) mais le réécrit vers vidmoly.biz via
+    # /js/contenu/videos.js. Le script ne s'appelle plus "script_videos" : sans
+    # la détection du nouveau nom, on gardait le lien vidmoly.to -> pubs.
+    download_am._REWRITE_CACHE.clear()
+    page_html = (
+        '<html><head>'
+        '<script type="text/javascript" src="episodes.js?filever=4427"></script>'
+        '<script defer src="/js/contenu/videos.js?v=1783185768"></script>'
+        '</head></html>'
+    )
+    videos_js = (
+        "/* Changer lien vidmoly */\n"
+        "function replaceVidmoly(url) {\n"
+        "  return url.replace(/vidmoly\\.(to|net)/g, 'vidmoly.biz');\n"
+        "}\n"
+        "const proto = HTMLIFrameElement.prototype;\n"
+        "const original = Object.getOwnPropertyDescriptor(proto, 'src');\n"
+        "Object.defineProperty(proto, 'src', {\n"
+        "  set(value) { original.set.call(this, value ? replaceVidmoly(value) : value); },\n"
+        "});\n"
+    )
+
+    class Resp:
+        def __init__(self, text, url):
+            self.text = text
+            self.url = url
+
+        def raise_for_status(self):
+            return None
+
+    def fake_request(_method, url, **_kwargs):
+        if "videos.js" in url:
+            return Resp(videos_js, url)
+        return Resp(page_html, "https://anime-sama.to/catalogue/fire-force/saison2/vostfr/")
+
+    monkeypatch.setattr(download_am, "_am_request", fake_request)
+    try:
+        rewritten = download_am._apply_site_iframe_rewrites(
+            None,
+            "https://anime-sama.to/catalogue/fire-force/saison2/vostfr/#episode=3&player=Vidmoly",
+            {"User-Agent": "x"},
+            [
+                "https://vidmoly.to/embed-0uzet8a8x0o1.html",
+                "https://video.sibnet.ru/shell.php?videoid=4670220",
+            ],
+        )
+    finally:
+        download_am._REWRITE_CACHE.clear()
+
+    assert rewritten == [
+        "https://vidmoly.biz/embed-0uzet8a8x0o1.html",         # .to -> .biz (plus de pub)
+        "https://video.sibnet.ru/shell.php?videoid=4670220",   # autres hôtes intacts
+    ]
