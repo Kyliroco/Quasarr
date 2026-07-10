@@ -16,13 +16,18 @@ from quasarr.downloads.ytdlp_worker import (
     DEFAULT_OUTPUT_DIR,
     MAX_INTER_JOB_DELAY,
     MIN_INTER_JOB_DELAY,
+    RATE_LIMIT_BACKOFF_SECONDS,
+    RATE_LIMIT_MAX_RETRIES,
     YtdlpWorker,
     _apply_ownership,
     _completed_output_exists,
+    _is_rate_limited,
     _nearest_ownership,
     enqueue_job,
     get_all_jobs,
     get_output_dir,
+    get_rate_limit_backoff_seconds,
+    get_rate_limit_max_retries,
 )
 from quasarr.search.sources import am
 
@@ -909,3 +914,158 @@ def test_sibnet_uses_ipv4_source_referer_and_retries_403(tmp_path, monkeypatch):
     assert all(options["source_address"] == "0.0.0.0" for options in calls)
     assert all(options["http_headers"] == {"Referer": source_url} for options in calls)
     assert all("User-Agent" not in options["http_headers"] for options in calls)
+
+
+class _NeverStop:
+    """Faux threading.Event : jamais déclenché, mémorise les durées d'attente.
+
+    Permet de simuler la temporisation 429 sans dormir réellement 10 minutes.
+    """
+
+    def __init__(self):
+        self.waits = []
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        return False
+
+    def is_set(self):
+        return False
+
+    def set(self):
+        pass
+
+    def clear(self):
+        pass
+
+
+class _CfgState:
+    """Mock minimal exposant une section YTDLP configurable clé par clé."""
+
+    def __init__(self, **ytdlp):
+        self._ytdlp = ytdlp
+        self.values = {"config": self._config}
+
+    def _config(self, section):
+        assert section == "YTDLP"
+        return SimpleNamespace(get=lambda key: self._ytdlp.get(key, ""))
+
+
+def test_rate_limit_settings_read_from_ui_config():
+    # Valeurs saisies dans l'UI honorées (minutes -> secondes).
+    s = _CfgState(rate_limit_backoff_minutes="2", rate_limit_max_retries="3")
+    assert get_rate_limit_backoff_seconds(s) == 120
+    assert get_rate_limit_max_retries(s) == 3
+
+    # Champs vides -> défauts.
+    s = _CfgState()
+    assert get_rate_limit_backoff_seconds(s) == RATE_LIMIT_BACKOFF_SECONDS
+    assert get_rate_limit_max_retries(s) == RATE_LIMIT_MAX_RETRIES
+
+    # Saisie invalide -> défauts.
+    s = _CfgState(rate_limit_backoff_minutes="abc", rate_limit_max_retries="x")
+    assert get_rate_limit_backoff_seconds(s) == RATE_LIMIT_BACKOFF_SECONDS
+    assert get_rate_limit_max_retries(s) == RATE_LIMIT_MAX_RETRIES
+
+    # 0 réessai = échec immédiat (autorisé) ; back-off <= 0 -> défaut.
+    assert get_rate_limit_max_retries(_CfgState(rate_limit_max_retries="0")) == 0
+    assert get_rate_limit_backoff_seconds(_CfgState(rate_limit_backoff_minutes="0")) \
+        == RATE_LIMIT_BACKOFF_SECONDS
+
+
+def test_is_rate_limited_detects_http_429():
+    assert _is_rate_limited(RuntimeError(
+        "ERROR: [generic] Unable to download webpage: HTTP Error 429: Too Many Requests"))
+    assert _is_rate_limited(Exception("HTTP Error 429"))
+    assert not _is_rate_limited(RuntimeError("HTTP Error 403: Forbidden"))
+    assert not _is_rate_limited(RuntimeError("Unable to download webpage: HTTP Error 404"))
+
+
+def test_http_429_holds_queue_and_retries_without_failing(tmp_path, monkeypatch):
+    # anime-sama renvoie 429 : on doit tenir la file (pause) et réessayer le même
+    # lecteur, sans jamais marquer le job "failed" (sinon Sonarr blackliste).
+    state = FakeState(str(tmp_path))
+    link = "https://anime-sama.invalid/embed"
+    job = enqueue_job(
+        state, "pkg-429", "Island.2018.S01E01", [link], "tt8737996", 450,
+        source_url="https://anime-sama.to/catalogue/island/saison1/vostfr/",
+    )
+
+    saved_statuses = []
+    calls = {"n": 0}
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def download(self, links):
+            assert links == [link]  # toujours le même lecteur, jamais abandonné
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RuntimeError(
+                    "ERROR: [generic] Unable to download webpage: "
+                    "HTTP Error 429: Too Many Requests"
+                )
+            final = self.options["outtmpl"].replace("%(ext)s", "mp4")
+            with open(final, "wb") as stream:
+                stream.write(b"complete file")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+
+    worker = YtdlpWorker(state, inter_job_delay=0, random_uniform=lambda _low, _high: 0)
+    fake_stop = _NeverStop()
+    worker._stop = fake_stop
+    original_save = worker._save
+    monkeypatch.setattr(worker, "_save",
+                        lambda job: (saved_statuses.append(job.get("status")), original_save(job))[1])
+
+    worker._run_job(job)
+
+    completed = json.loads(state.db.retrieve("pkg-429"))
+    assert completed["status"] == "completed"          # jamais "failed"
+    assert "failed" not in saved_statuses              # aucune sauvegarde en échec
+    assert calls["n"] == 3                              # 2 backoffs puis succès
+    # Deux pauses ~10 min ont tenu la file (worker mono-thread → 0 autre DL).
+    assert fake_stop.waits.count(RATE_LIMIT_BACKOFF_SECONDS) == 2
+    assert not completed.get("rate_limited")           # marqueur nettoyé à la fin
+
+
+def test_http_429_gives_up_after_max_retries_to_avoid_stuck_queue(tmp_path, monkeypatch):
+    # Garde-fou : si l'hébergeur nous limite durablement, on finit par abandonner
+    # après RATE_LIMIT_MAX_RETRIES cycles pour ne pas bloquer la file à vie.
+    state = FakeState(str(tmp_path))
+    job = enqueue_job(
+        state, "pkg-429-max", "Show.S01E01",
+        ["https://anime-sama.invalid/embed"], "tt1", 450,
+    )
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self.options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def download(self, _links):
+            raise RuntimeError("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", SimpleNamespace(YoutubeDL=FakeYoutubeDL))
+    worker = YtdlpWorker(state, inter_job_delay=0, random_uniform=lambda _low, _high: 0)
+    fake_stop = _NeverStop()
+    worker._stop = fake_stop
+
+    worker._run_job(job)
+
+    failed = json.loads(state.db.retrieve("pkg-429-max"))
+    assert failed["status"] == "failed"
+    assert fake_stop.waits.count(RATE_LIMIT_BACKOFF_SECONDS) == RATE_LIMIT_MAX_RETRIES
+    assert "429" in failed["error"] or "Too Many Requests" in failed["error"]
