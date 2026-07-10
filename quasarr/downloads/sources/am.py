@@ -96,8 +96,12 @@ def _site_iframe_rewrite_rules(shared_state, source_url, headers):
     try:
         page_response = _am_request("GET", page_url, headers=headers, timeout=15)
         page_response.raise_for_status()
+        # Le script qui déclare les réécritures d'iframe (ex. vidmoly.to ->
+        # vidmoly.biz) s'est appelé successivement "script_videos" puis
+        # "/js/contenu/videos.js". On accepte les deux : sans lui, on garderait
+        # le lien vidmoly.to d'origine, qui redirige vers des pubs.
         script_match = re.search(
-            r"<script[^>]+src\s*=\s*(['\"])([^'\"]*script_videos[^'\"]*)\1",
+            r"<script[^>]+src\s*=\s*(['\"])([^'\"]*(?:script_videos|videos\.js)[^'\"]*)\1",
             page_response.text,
             re.I,
         )
