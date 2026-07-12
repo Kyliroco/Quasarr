@@ -3,7 +3,7 @@
 # Python
 *.pyc
 *.bak
-
+.env
 # Build Tools
 venv
 

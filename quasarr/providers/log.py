@@ -4,6 +4,7 @@
 
 import datetime
 import os
+import sys
 import threading
 import traceback
 from collections import deque
@@ -82,7 +83,15 @@ def _emit(level: str, message: str, source: str = "", **extra):
     prefix = f"[{ts.split('T')[0]} {ts.split('T')[1][:8]}]"
     tag = f" [{source.upper()}]" if source else ""
     level_tag = f" {level}" if level not in ("INFO",) else ""
-    print(f"{prefix}{tag}{level_tag} {message}", flush=True)
+    line = f"{prefix}{tag}{level_tag} {message}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Console non-UTF-8 (ex. cp1252 sous Windows) : un titre japonais
+        # (ワンピース…) ne doit JAMAIS faire planter la recherche qui logue. On
+        # remplace les caractères non encodables au lieu de lever.
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
 
 # ---------------------------------------------------------------------------
