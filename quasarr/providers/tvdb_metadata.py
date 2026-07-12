@@ -135,6 +135,23 @@ def get_absolute_number(shared_state, imdb_id, season, episode):
     return _episode_map(series_id).get((season, episode))
 
 
+def get_total_absolute_numbers(shared_state, imdb_id):
+    """Plus grand numéro absolu connu de TheTVDB (≈ nombre total d'épisodes).
+
+    Sert de contrôle au regroupement absolu d'anime-sama : on ne fait confiance
+    à la concaténation des dossiers que si son total colle avec ce nombre. On
+    lit la même source (``absoluteNumber``) que ``get_absolute_number`` pour
+    rester cohérent. None si TheTVDB est indisponible.
+    """
+    series_id = _series_id(imdb_id)
+    if not series_id:
+        return None
+    mapping = _episode_map(series_id)
+    if not mapping:
+        return None
+    return max(mapping.values())
+
+
 def get_season_absolute_numbers(shared_state, imdb_id, season):
     """[(épisode, absolu), ...] triés pour une saison entière (vide si indispo)."""
     try:

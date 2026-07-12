@@ -19,6 +19,7 @@ Les releases produites ici sont téléchargées via yt-dlp (voir
 import html
 import random
 import re
+import threading
 import time
 import unicodedata
 from base64 import urlsafe_b64encode
@@ -36,6 +37,7 @@ from quasarr.providers.imdb_metadata import (
 from quasarr.providers.tvdb_metadata import (
     get_absolute_number as tvdb_absolute_number,
     get_season_absolute_numbers as tvdb_season_absolute_numbers,
+    get_total_absolute_numbers as tvdb_total_absolute_numbers,
 )
 from quasarr.providers.players import register_player, is_player_enabled
 from quasarr.providers.log import info, debug, error, log_event
@@ -652,17 +654,173 @@ def _subsequent_part_episodes(shared_state, declarations, language, after_path,
     return flat
 
 
+# Cache mémoire court des dossiers anime-sama : le regroupement absolu relit
+# plusieurs fois les mêmes dossiers (contrôle de total + parcours), et chaque
+# lecture est jitterée. Clé = (slug, path).
+_EPISODES_CACHE = {}
+_EPISODES_CACHE_LOCK = threading.Lock()
+_EPISODES_CACHE_TTL = 10 * 60
+
+
+def _fetch_episodes_cached(shared_state, am, slug, path, headers):
+    """``_fetch_episodes`` avec cache mémoire court (voir ``_EPISODES_CACHE``)."""
+    key = (slug, path)
+    now = time.time()
+    with _EPISODES_CACHE_LOCK:
+        hit = _EPISODES_CACHE.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    result = _fetch_episodes(shared_state, am, slug, path, headers)
+    if result[0] and result[1]:  # eps_map et indices non vides
+        with _EPISODES_CACHE_LOCK:
+            _EPISODES_CACHE[key] = (now + _EPISODES_CACHE_TTL, result)
+    return result
+
+
+def _ordered_episode_folders(declarations, language, include_hs):
+    """Dossiers d'épisodes TV dans l'ordre de déclaration (= ordre de diffusion).
+
+    ``include_hs`` ajoute les arcs hors-série ``saisonNhs`` (ex. Demon Slayer :
+    l'arc du Train de l'infini, rangé hors-série alors que TheTVDB le compte
+    comme une saison). Films / OAV / autres restent toujours exclus.
+    """
+    if include_hs:
+        pattern = re.compile(rf"saison\d+(?:-\d+)?(?:hs)?/{re.escape(language)}", re.I)
+    else:
+        pattern = re.compile(rf"saison\d+(?:-\d+)?/{re.escape(language)}", re.I)
+    ordered, seen = [], set()
+    for _label, path in declarations or []:
+        if path not in seen and pattern.fullmatch(path):
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def _series_total_episodes(shared_state, imdb_id):
+    """Total d'épisodes attendu (TheTVDB d'abord, somme des saisons TMDB sinon).
+
+    Contrôle du regroupement absolu : on ne retient une concaténation de dossiers
+    anime-sama que si son total colle avec ce nombre. On lit TheTVDB en priorité
+    pour rester cohérent avec ``_absolute_episode``.
+    """
+    total = tvdb_total_absolute_numbers(shared_state, imdb_id)
+    if total:
+        return total
+    counts = get_season_episode_counts(shared_state, imdb_id)
+    if counts:
+        return sum(counts.values()) or None
+    return None
+
+
+def _build_absolute_concat(shared_state, folder_paths, preloaded, am, slug, headers):
+    """Concatène les dossiers donnés -> ``[(path, eps_map, indices, local, am), ...]``.
+
+    La position i (0-based) correspond au numéro absolu i+1. Retourne ``[]`` si
+    un dossier est vide ou inaccessible (concaténation non fiable).
+    """
+    concat = []
+    current_am = am
+    for path in folder_paths:
+        if preloaded and path == preloaded[0]:
+            eps_map, episode_indices = preloaded[1], preloaded[2]
+        else:
+            eps_map, episode_indices, current_am = _fetch_episodes_cached(
+                shared_state, current_am, slug, path, headers
+            )
+        if not eps_map or not episode_indices:
+            return []
+        for local in sorted(episode_indices):
+            concat.append((path, eps_map, episode_indices, local, current_am))
+    return concat
+
+
+def _absolute_grouping_plan(shared_state, imdb_id, season_num, episode_num,
+                            declarations, language, season_path, eps_map, episode_indices,
+                            am, slug, headers):
+    """Méthode principale : regrouper les épisodes anime-sama par numéro absolu.
+
+    On concatène les dossiers dans l'ordre de diffusion pour former une séquence
+    absolue, et on ne s'en sert QUE si son total colle avec TheTVDB. Deux
+    regroupements sont tentés : dossiers numérotés seuls, puis avec les arcs
+    hors-série (Demon Slayer range l'arc du Train de l'infini en hors-série alors
+    que TheTVDB le compte comme la saison 2). L'épisode demandé (ou toute la
+    saison) est converti en absolu via TheTVDB puis lu à sa position dans la
+    concaténation. Retourne ``None`` si aucun total ne correspond : l'appelant
+    bascule alors sur la méthode saison-relative.
+    """
+    expected_total = _series_total_episodes(shared_state, imdb_id)
+    if not expected_total:
+        return None
+
+    preloaded = (season_path, eps_map, episode_indices)
+    concat = None
+    for include_hs in (False, True):
+        folders = _ordered_episode_folders(declarations, language, include_hs)
+        candidate = _build_absolute_concat(shared_state, folders, preloaded, am, slug, headers)
+        if candidate and len(candidate) == expected_total:
+            concat = candidate
+            debug(f"{hostname.upper()} absolute grouping for {slug}: {len(concat)} episodes "
+                  f"(hors-série {'inclus' if include_hs else 'exclus'})")
+            break
+
+    if concat is None:
+        debug(f"{hostname.upper()} absolute grouping skipped for {slug}: no folder set "
+              f"matched metadata total {expected_total}")
+        return None
+
+    def locate(absolute):
+        if absolute and 1 <= absolute <= len(concat):
+            return concat[absolute - 1]
+        return None
+
+    if episode_num is not None:
+        entry = locate(_absolute_episode(shared_state, imdb_id, season_num, episode_num))
+        if not entry:
+            return None
+        path, e_map, e_idx, local, e_am = entry
+        return [(episode_num, path, e_map, e_idx, local, e_am)]
+
+    located = []
+    for ep, absolute in _absolute_season_plan(shared_state, imdb_id, season_num):
+        entry = locate(absolute)
+        if entry:
+            path, e_map, e_idx, local, e_am = entry
+            located.append((ep, path, e_map, e_idx, local, e_am))
+    return located or None
+
+
 def _plan_located_episodes(shared_state, imdb_id, season_num, episode_num, aligned,
                            declarations, language, season_path, eps_map, episode_indices,
                            am, slug, headers):
     """Localise chaque épisode Sonarr dans son dossier anime-sama.
 
-    Retourne ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``. Comme
-    une saison TheTVDB peut être éclatée en plusieurs dossiers (« parties »),
-    chaque épisode conserve son propre dossier / index / hôte.
+    Retourne ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``.
 
-    - Aligné + épisode présent dans le dossier : mapping direct (le plus
-      robuste, sans requête supplémentaire).
+    Méthode principale : regroupement par numéro absolu (concaténation de tous
+    les dossiers, validée par le total TheTVDB) — voir ``_absolute_grouping_plan``.
+    Si aucun regroupement ne colle (structure inattendue), on bascule sur le
+    repli saison-relatif ``_season_relative_plan``.
+    """
+    absolute = _absolute_grouping_plan(
+        shared_state, imdb_id, season_num, episode_num,
+        declarations, language, season_path, eps_map, episode_indices,
+        am, slug, headers,
+    )
+    if absolute:
+        return absolute
+    return _season_relative_plan(
+        shared_state, imdb_id, season_num, episode_num, aligned,
+        declarations, language, season_path, eps_map, episode_indices,
+        am, slug, headers,
+    )
+
+
+def _season_relative_plan(shared_state, imdb_id, season_num, episode_num, aligned,
+                          declarations, language, season_path, eps_map, episode_indices,
+                          am, slug, headers):
+    """Repli saison-relatif quand le regroupement absolu ne s'applique pas.
+
+    - Aligné + épisode présent dans le dossier : mapping direct.
     - Aligné + épisode au-delà du dossier : suivi des parties suivantes
       (saison3 -> saison3-2), aussi bien pour un épisode que pour la saison
       entière.
