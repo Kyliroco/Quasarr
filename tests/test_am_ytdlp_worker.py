@@ -659,6 +659,66 @@ def test_demon_slayer_season5_resolves_via_absolute_grouping(monkeypatch):
     assert loc(8) == ("saison4/vostfr", 8)   # dernier
 
 
+_OP_KAI_DECLS = [
+    ("Saga 1 (East Blue)", "saison1/vostfr"),
+    ("Saga 12 (Elbaf)", "saison12/vostfr"),
+    ("Films", "film/vostfr"),
+    ("Kai - Saga 1 (East Blue)", "kai/vostfr"),
+    ("Kai - Saga 2 (Alabasta)", "kai2/vostfr"),
+]
+
+
+def test_kai_folders_detects_per_saga_and_single():
+    # One Piece : kai par saga (kai = saga 1, kai2 = saga 2).
+    assert am._kai_folders(_OP_KAI_DECLS, "vostfr") == {1: "kai/vostfr", 2: "kai2/vostfr"}
+    # Fairy Tail : un seul dossier « kai ».
+    assert am._kai_folders([("Kai", "kai/vostfr"), ("Saison 1", "saison1/vostfr")], "vostfr") == {1: "kai/vostfr"}
+    # Aucune version Kai.
+    assert am._kai_folders([("Saison 1", "saison1/vostfr")], "vostfr") == {}
+
+
+def test_kai_per_saga_serves_kai_and_defers_seasons_without_kai(monkeypatch):
+    # One Piece : kai (7 films) = saga 1, kai2 (9) = saga 2 ; saga 12 sans kai.
+    op = {"kai/vostfr": _folder("kai", 7), "kai2/vostfr": _folder("kai2", 9)}
+    monkeypatch.setattr(am, "_fetch_episodes_cached",
+                        lambda _s, _a, _sl, path, _h: (op[path][0], op[path][1], "anime-sama.to"))
+    kai_map = am._kai_folders(_OP_KAI_DECLS, "vostfr")
+
+    def kai(season, ep):
+        return am._kai_located_episodes(object(), "tt", season, ep, kai_map, "anime-sama.to", "one-piece", {})
+
+    handled, loc = kai(1, 3)
+    assert handled and (loc[0][1], loc[0][4]) == ("kai/vostfr", 3)   # S1E3 -> kai film 3
+    handled, loc = kai(2, 9)
+    assert handled and (loc[0][1], loc[0][4]) == ("kai2/vostfr", 9)  # S2E9 -> kai2 film 9
+    handled, loc = kai(1, 8)
+    assert handled and loc == []       # au-delà des 7 films -> rien (pas d'épisode normal)
+    handled, loc = kai(12, 1)
+    assert handled is False            # saga sans kai -> l'appelant sert les épisodes normaux
+
+
+def test_kai_single_lays_films_sequentially_across_seasons(monkeypatch):
+    # Fairy Tail : un seul dossier kai (60 films) ; TheTVDB S1=48, S2=48.
+    kai_eps, kai_idx = _folder("kai", 60)
+    monkeypatch.setattr(am, "_fetch_episodes_cached",
+                        lambda _s, _a, _sl, path, _h: (kai_eps, kai_idx, "anime-sama.to"))
+    monkeypatch.setattr(am, "_tmdb_offset",
+                        lambda _s, _i, season: {1: (0, 48), 2: (48, 48)}.get(season, (None, None)))
+    kai_map = {1: "kai/vostfr"}
+
+    def kai(season, ep):
+        handled, loc = am._kai_located_episodes(
+            object(), "tt", season, ep, kai_map, "anime-sama.to", "fairy-tail", {})
+        assert handled is True         # kai unique -> toujours géré (jamais d'épisode normal)
+        return (loc[0][1], loc[0][4]) if loc else None
+
+    assert kai(1, 1) == ("kai/vostfr", 1)
+    assert kai(1, 48) == ("kai/vostfr", 48)
+    assert kai(2, 1) == ("kai/vostfr", 49)    # déborde dans la saison 2
+    assert kai(2, 12) == ("kai/vostfr", 60)    # dernier film
+    assert kai(2, 13) is None                  # film 61 > 60 -> rien
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"

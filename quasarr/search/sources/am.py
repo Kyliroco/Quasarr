@@ -888,6 +888,118 @@ def _season_relative_plan(shared_state, imdb_id, season_num, episode_num, aligne
             for ep, absolute in _absolute_season_plan(shared_state, imdb_id, season_num)]
 
 
+def _kai_folders(declarations, language):
+    """{numéro_saga: chemin} des dossiers « Kai » d'une langue.
+
+    Le Kai est un remontage condensé (génériques retirés, arcs en longs
+    « films »). « kai » = saga 1, « kaiN » = saga N. Vide si la série n'a pas de
+    version Kai.
+    """
+    pattern = re.compile(rf"kai(\d*)/{re.escape(language)}", re.I)
+    result = {}
+    for _label, path in declarations or []:
+        match = pattern.fullmatch(path)
+        if match:
+            number = int(match.group(1)) if match.group(1) else 1
+            result.setdefault(number, path)
+    return result
+
+
+def _kai_located_episodes(shared_state, imdb_id, season_num, episode_num,
+                          kai_map, am, slug, headers):
+    """Localise les films Kai pour une requête Sonarr → (handled, located).
+
+    Deux dispositions :
+    - Par saga (One Piece : kai, kai2, … kaiN) : le dossier kaiN sert la saison N,
+      ses films deviennent les épisodes 1, 2, 3… Au-delà du nombre de films →
+      rien. Une saison SANS dossier kai n'est pas gérée ici (``handled=False``) :
+      l'appelant repasse alors sur les épisodes normaux.
+    - Kai unique (Fairy Tail : un seul dossier « kai ») : les films sont posés en
+      séquence à travers les saisons via les comptes d'épisodes TheTVDB/TMDB.
+      Au-delà du nombre de films → rien, et jamais d'épisode normal
+      (``handled=True`` toujours).
+
+    ``located`` = ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``.
+    """
+    single_kai = set(kai_map) == {1}
+
+    if single_kai:
+        kai_path = kai_map[1]
+        eps_map, indices, am = _fetch_episodes_cached(shared_state, am, slug, kai_path, headers)
+        if not indices:
+            return True, []
+        films = sorted(indices)  # numéros affichés des films dans l'ordre
+        total = len(films)
+        offset, season_len = _tmdb_offset(shared_state, imdb_id, season_num)
+        if offset is None:
+            return True, []
+        located = []
+        if episode_num is not None:
+            position = offset + episode_num
+            if 1 <= position <= total:
+                located.append((episode_num, kai_path, eps_map, indices, films[position - 1], am))
+        else:
+            for ep in range(1, (season_len or 0) + 1):
+                position = offset + ep
+                if position > total:
+                    break
+                located.append((ep, kai_path, eps_map, indices, films[position - 1], am))
+        return True, located
+
+    # Par saga : la saison demandée doit avoir son propre dossier kai.
+    kai_path = kai_map.get(season_num)
+    if not kai_path:
+        return False, []  # saison sans kai → l'appelant sert les épisodes normaux
+    eps_map, indices, am = _fetch_episodes_cached(shared_state, am, slug, kai_path, headers)
+    if not indices:
+        return True, []
+    if episode_num is not None:
+        if episode_num in indices:
+            return True, [(episode_num, kai_path, eps_map, indices, episode_num, am)]
+        return True, []
+    return True, [(ep, kai_path, eps_map, indices, ep, am) for ep in sorted(indices)]
+
+
+def _emit_located_releases(shared_state, located, slug, season_for_tag, names, year,
+                           release_suffix, imdb_id):
+    """Construit les releases Sonarr depuis une liste localisée.
+
+    Une release par lecteur disponible, titre SxxExx normal (un film Kai passe
+    donc pour un épisode normal). ``located`` =
+    ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``.
+    """
+    releases = []
+    seen_titles = set()
+    for ep, part_path, part_eps, part_idx, ep_local, part_am in located:
+        source_index = part_idx.get(ep_local)
+        if source_index is None:
+            debug(f"{hostname.upper()} ignored non-exact or missing EPISODE {ep_local} "
+                  f"for {slug}/{part_path}")
+            continue
+        candidates = _candidates_for_index(part_eps, source_index)
+        if not candidates:
+            continue
+        base_source = f"https://{part_am}/catalogue/{slug}/{part_path}/"
+        tag = f"S{season_for_tag:02d}E{ep:02d}"
+        # Une release par lecteur disponible (Sonarr peut les essayer chacun).
+        for embed_url in candidates:
+            host_tag = _host_tag(embed_url)
+            register_player(shared_state, host_tag, slug, season_for_tag, ep)
+            if not is_player_enabled(shared_state, host_tag):
+                continue
+            source = f"{base_source}#episode={source_index + 1}&player={host_tag}"
+            for name in names:
+                dotted = _dotted_title(name)
+                if not dotted:
+                    continue
+                title = _release_title(dotted, year, tag, release_suffix, host_tag)
+                if title in seen_titles:
+                    continue
+                seen_titles.add(title)
+                releases.append(_build_release(shared_state, title, source, EPISODE_SIZE_MB, imdb_id))
+    return releases
+
+
 def am_search(shared_state, start_time, request_from, search_string,
               mirror=None, season=None, episode=None):
     releases = []
@@ -989,52 +1101,41 @@ def am_search(shared_state, start_time, request_from, search_string,
         # Sonarr : un épisode précis, ou toute la saison si aucun épisode demandé.
         season_for_tag = season_num if season_num is not None else 1
 
-        # Principe unifié : on traduit la demande (saison/épisode) vers le bon
-        # dossier anime-sama en suivant les épisodes de proche en proche. Une
-        # saison TheTVDB peut être « alignée » (anime-sama a le dossier saisonN),
-        # éclatée en parties (saison3 + saison3-2) ou rangée en absolu dans un
-        # dossier unique (Fairy Tail). _plan_located_episodes gère les trois et
-        # renvoie, PAR épisode Sonarr, son dossier/index/hôte propres.
-        requested_path = f"saison{season_num}/{language}" if season_num is not None else None
-        aligned = (requested_path is None) or (season_path.lower() == requested_path)
+        located = None
+        # Mode Kai : si la série a des dossiers « kai », on remplace les épisodes
+        # par les remontages condensés en les faisant passer pour des SxxExx
+        # normaux (voir _kai_located_episodes). Une saison sans kai (mode par
+        # saga, ex. One Piece Elbaf) n'est pas gérée -> on repasse au flux normal.
+        kai_map = _kai_folders(declarations, language) if season_num is not None else {}
+        if kai_map:
+            handled, kai_located = _kai_located_episodes(
+                shared_state, imdb_id, season_num, episode_num, kai_map, am, slug, headers,
+            )
+            if handled:
+                located = kai_located
+                debug(f"{hostname.upper()} kai mode for {slug} S{season_num}: "
+                      f"{len(located)} film(s)")
 
-        located = _plan_located_episodes(
-            shared_state, imdb_id, season_num, episode_num, aligned,
-            declarations, language, season_path, eps_map, episode_indices,
-            am, slug, headers,
-        )
+        if located is None:
+            # Flux normal : on traduit (saison/épisode) vers le bon dossier
+            # anime-sama (aligné / parties / absolu). _plan_located_episodes
+            # renvoie, PAR épisode Sonarr, son dossier/index/hôte propres.
+            requested_path = f"saison{season_num}/{language}" if season_num is not None else None
+            aligned = (requested_path is None) or (bool(season_path) and season_path.lower() == requested_path)
+            located = _plan_located_episodes(
+                shared_state, imdb_id, season_num, episode_num, aligned,
+                declarations, language, season_path, eps_map, episode_indices,
+                am, slug, headers,
+            )
+
         if not located:
             suffix = f"E{episode_num}" if episode_num is not None else ""
             debug(f"{hostname.upper()} could not map S{season_num}{suffix} for {slug}")
             return releases
 
-        for ep, part_path, part_eps, part_idx, ep_local, part_am in located:
-            source_index = part_idx.get(ep_local)
-            if source_index is None:
-                debug(f"{hostname.upper()} ignored non-exact or missing EPISODE {ep_local} "
-                      f"for {slug}/{part_path}")
-                continue
-            candidates = _candidates_for_index(part_eps, source_index)
-            if not candidates:
-                continue
-            base_source = f"https://{part_am}/catalogue/{slug}/{part_path}/"
-            tag = f"S{season_for_tag:02d}E{ep:02d}"
-            # Une release par lecteur disponible (Sonarr peut les essayer chacun).
-            for embed_url in candidates:
-                host_tag = _host_tag(embed_url)
-                register_player(shared_state, host_tag, slug, season_for_tag, ep)
-                if not is_player_enabled(shared_state, host_tag):
-                    continue
-                source = f"{base_source}#episode={source_index + 1}&player={host_tag}"
-                for name in names:
-                    dotted = _dotted_title(name)
-                    if not dotted:
-                        continue
-                    title = _release_title(dotted, year, tag, release_suffix, host_tag)
-                    if title in seen_titles:
-                        continue
-                    seen_titles.add(title)
-                    releases.append(_build_release(shared_state, title, source, EPISODE_SIZE_MB, imdb_id))
+        releases.extend(_emit_located_releases(
+            shared_state, located, slug, season_for_tag, names, year, release_suffix, imdb_id,
+        ))
 
     log_event("search_complete", source="am", level="INFO",
               query=imdb_id, results_count=len(releases),
