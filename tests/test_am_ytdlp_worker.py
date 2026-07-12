@@ -677,28 +677,34 @@ def test_kai_folders_detects_per_saga_and_single():
     assert am._kai_folders([("Saison 1", "saison1/vostfr")], "vostfr") == {}
 
 
-def test_kai_per_saga_serves_kai_and_defers_seasons_without_kai(monkeypatch):
-    # One Piece : kai (7 films) = saga 1, kai2 (9) = saga 2 ; saga 12 sans kai.
-    op = {"kai/vostfr": _folder("kai", 7), "kai2/vostfr": _folder("kai2", 9)}
+def test_kai_per_saga_real_absolute_then_gap_then_regular(monkeypatch):
+    # Modèle One Piece : Sonarr en absolu réel. kai=3 films (saga 1), kai2=2
+    # (saga 2) -> T=5 ; saison1=10, saison2=8 -> M=18 (arcs condensés).
+    data = {
+        "kai/vostfr": _folder("k1", 3), "kai2/vostfr": _folder("k2", 2),
+        "saison1/vostfr": _folder("s1", 10), "saison2/vostfr": _folder("s2", 8),
+    }
     monkeypatch.setattr(am, "_fetch_episodes_cached",
-                        lambda _s, _a, _sl, path, _h: (op[path][0], op[path][1], "anime-sama.to"))
-    kai_map = am._kai_folders(_OP_KAI_DECLS, "vostfr")
+                        lambda _s, _a, _sl, path, _h: (data[path][0], data[path][1], "anime-sama.to"))
+    # Sonarr One Piece = une saison absolue : (1, e) -> épisode absolu e.
+    monkeypatch.setattr(am, "_absolute_episode",
+                        lambda _s, _i, season, ep: ep if season == 1 else None)
+    kai_map = {1: "kai/vostfr", 2: "kai2/vostfr"}
 
-    def kai(season, ep):
-        return am._kai_located_episodes(object(), "tt", season, ep, kai_map, "anime-sama.to", "one-piece", {})
+    def kai(ep):
+        return am._kai_located_episodes(
+            object(), "tt", 1, ep, kai_map, "vostfr", "anime-sama.to", "one-piece", {})
 
-    handled, loc = kai(1, 3)
-    assert handled and (loc[0][1], loc[0][4]) == ("kai/vostfr", 3)   # S1E3 -> kai film 3
-    handled, loc = kai(2, 9)
-    assert handled and (loc[0][1], loc[0][4]) == ("kai2/vostfr", 9)  # S2E9 -> kai2 film 9
-    handled, loc = kai(1, 8)
-    assert handled and loc == []       # au-delà des 7 films -> rien (pas d'épisode normal)
-    handled, loc = kai(12, 1)
-    assert handled is False            # saga sans kai -> l'appelant sert les épisodes normaux
+    h, l = kai(1);  assert h and (l[0][1], l[0][4]) == ("kai/vostfr", 1)    # 1er film kai
+    h, l = kai(4);  assert h and (l[0][1], l[0][4]) == ("kai2/vostfr", 1)   # film 4 -> kai2 film 1
+    h, l = kai(5);  assert h and (l[0][1], l[0][4]) == ("kai2/vostfr", 2)   # dernier film kai (T=5)
+    h, l = kai(6);  assert h and l == []       # 6 <= M=18 -> arc condensé -> rien
+    h, l = kai(18); assert h and l == []       # encore condensé
+    h, l = kai(19); assert h is False          # > M -> « la fin » -> flux normal (Elbaf)
 
 
 def test_kai_single_lays_films_sequentially_across_seasons(monkeypatch):
-    # Fairy Tail : un seul dossier kai (60 films) ; TheTVDB S1=48, S2=48.
+    # Kai unique (Fairy Tail : un seul dossier kai, 60 films) ; TheTVDB S1=48, S2=48.
     kai_eps, kai_idx = _folder("kai", 60)
     monkeypatch.setattr(am, "_fetch_episodes_cached",
                         lambda _s, _a, _sl, path, _h: (kai_eps, kai_idx, "anime-sama.to"))
@@ -708,7 +714,7 @@ def test_kai_single_lays_films_sequentially_across_seasons(monkeypatch):
 
     def kai(season, ep):
         handled, loc = am._kai_located_episodes(
-            object(), "tt", season, ep, kai_map, "anime-sama.to", "fairy-tail", {})
+            object(), "tt", season, ep, kai_map, "vostfr", "anime-sama.to", "fairy-tail", {})
         assert handled is True         # kai unique -> toujours géré (jamais d'épisode normal)
         return (loc[0][1], loc[0][4]) if loc else None
 
@@ -717,6 +723,27 @@ def test_kai_single_lays_films_sequentially_across_seasons(monkeypatch):
     assert kai(2, 1) == ("kai/vostfr", 49)    # déborde dans la saison 2
     assert kai(2, 12) == ("kai/vostfr", 60)    # dernier film
     assert kai(2, 13) is None                  # film 61 > 60 -> rien
+
+
+def test_log_survives_non_utf8_console(monkeypatch):
+    # Bug trouvé en test live : sous Windows (console cp1252), un titre japonais
+    # (ワンピース) dans un log faisait planter TOUTE la recherche. Un log ne doit
+    # jamais lever — on remplace les caractères non encodables.
+    from quasarr.providers import log
+
+    class Cp1252Stream:
+        encoding = "cp1252"
+
+        def write(self, s):
+            s.encode("cp1252")  # lève UnicodeEncodeError sur du japonais
+            return len(s)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(log.sys, "stdout", Cp1252Stream())
+    log.info("TMDB title original='ワンピース'")   # ne doit pas lever
+    log.info("スラッシュ", source="am")
 
 
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):

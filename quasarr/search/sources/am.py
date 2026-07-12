@@ -906,18 +906,19 @@ def _kai_folders(declarations, language):
 
 
 def _kai_located_episodes(shared_state, imdb_id, season_num, episode_num,
-                          kai_map, am, slug, headers):
+                          kai_map, language, am, slug, headers):
     """Localise les films Kai pour une requête Sonarr → (handled, located).
 
-    Deux dispositions :
-    - Par saga (One Piece : kai, kai2, … kaiN) : le dossier kaiN sert la saison N,
-      ses films deviennent les épisodes 1, 2, 3… Au-delà du nombre de films →
-      rien. Une saison SANS dossier kai n'est pas gérée ici (``handled=False``) :
-      l'appelant repasse alors sur les épisodes normaux.
-    - Kai unique (Fairy Tail : un seul dossier « kai ») : les films sont posés en
-      séquence à travers les saisons via les comptes d'épisodes TheTVDB/TMDB.
-      Au-delà du nombre de films → rien, et jamais d'épisode normal
-      (``handled=True`` toujours).
+    - Kai unique (Naruto, Fairy Tail… : un seul dossier « kai ») : le kai couvre
+      toute la série. Les films sont posés en séquence à travers les saisons via
+      les comptes d'épisodes TheTVDB/TMDB. Au-delà du nombre de films → rien, et
+      jamais d'épisode normal (``handled=True`` toujours).
+    - Par saga (One Piece : kai, kai2, … kaiN associés aux sagas) : Sonarr est en
+      numérotation absolue RÉELLE. Les films kai concaténés remplacent les
+      épisodes absolus 1..T ; les épisodes T+1..M (arcs condensés, où M = nombre
+      d'épisodes réguliers des sagas AYANT un kai) → rien ; au-delà de M (arcs
+      SANS kai, ex. Elbaf) → ``handled=False`` : l'appelant sert les épisodes
+      normaux (« la fin »).
 
     ``located`` = ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``.
     """
@@ -946,18 +947,44 @@ def _kai_located_episodes(shared_state, imdb_id, season_num, episode_num,
                 located.append((ep, kai_path, eps_map, indices, films[position - 1], am))
         return True, located
 
-    # Par saga : la saison demandée doit avoir son propre dossier kai.
-    kai_path = kai_map.get(season_num)
-    if not kai_path:
-        return False, []  # saison sans kai → l'appelant sert les épisodes normaux
-    eps_map, indices, am = _fetch_episodes_cached(shared_state, am, slug, kai_path, headers)
-    if not indices:
+    # --- Par saga : numérotation absolue réelle côté Sonarr ---
+    current_am = am
+
+    # Recherche saison entière : on renvoie la partie kai (positions absolues
+    # 1..T). La « fin » régulière se récupère par recherche épisode par épisode.
+    if episode_num is None:
+        located, position = [], 0
+        for saga in sorted(kai_map):
+            keps, kidx, current_am = _fetch_episodes_cached(shared_state, current_am, slug, kai_map[saga], headers)
+            for local in sorted(kidx):
+                position += 1
+                located.append((position, kai_map[saga], keps, kidx, local, current_am))
+        return True, located
+
+    absolute = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
+    if not absolute:
         return True, []
-    if episode_num is not None:
-        if episode_num in indices:
-            return True, [(episode_num, kai_path, eps_map, indices, episode_num, am)]
-        return True, []
-    return True, [(ep, kai_path, eps_map, indices, ep, am) for ep in sorted(indices)]
+
+    # 1) L'épisode absolu tombe-t-il dans un film kai (positions 1..T) ?
+    cumulative = 0
+    for saga in sorted(kai_map):
+        keps, kidx, current_am = _fetch_episodes_cached(shared_state, current_am, slug, kai_map[saga], headers)
+        films = sorted(kidx)
+        if absolute <= cumulative + len(films):
+            local = films[absolute - cumulative - 1]
+            return True, [(episode_num, kai_map[saga], keps, kidx, local, current_am)]
+        cumulative += len(films)
+
+    # 2) Au-delà des films kai : M = épisodes réguliers des sagas ayant un kai.
+    covered = 0
+    for saga in sorted(kai_map):
+        _e, ridx, current_am = _fetch_episodes_cached(
+            shared_state, current_am, slug, f"saison{saga}/{language}", headers)
+        covered += len(ridx)
+
+    if absolute <= covered:
+        return True, []       # arc condensé (remplacé par le kai) → rien
+    return False, []          # arc sans kai (« la fin ») → flux normal
 
 
 def _emit_located_releases(shared_state, located, slug, season_for_tag, names, year,
@@ -1109,7 +1136,7 @@ def am_search(shared_state, start_time, request_from, search_string,
         kai_map = _kai_folders(declarations, language) if season_num is not None else {}
         if kai_map:
             handled, kai_located = _kai_located_episodes(
-                shared_state, imdb_id, season_num, episode_num, kai_map, am, slug, headers,
+                shared_state, imdb_id, season_num, episode_num, kai_map, language, am, slug, headers,
             )
             if handled:
                 located = kai_located
