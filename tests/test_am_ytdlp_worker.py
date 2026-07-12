@@ -416,7 +416,7 @@ def test_plan_located_episode_direct_then_overflow(monkeypatch):
     def _no_fetch(*_a, **_k):
         raise AssertionError("aucune requête ne doit être faite pour un mapping direct")
     monkeypatch.setattr(am, "_fetch_episodes", _no_fetch)
-    direct = am._plan_located_episodes(
+    direct = am._season_relative_plan(
         object(), "tt5095466", 3, 5, True,
         _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
         "anime-sama.to", "fire-force", {},
@@ -428,7 +428,7 @@ def test_plan_located_episode_direct_then_overflow(monkeypatch):
                         lambda _s, _imdb, season: [(n, n) for n in range(1, 26)] if season == 3 else [])
     monkeypatch.setattr(am, "_fetch_episodes",
                         lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
-    overflow = am._plan_located_episodes(
+    overflow = am._season_relative_plan(
         object(), "tt5095466", 3, 13, True,
         _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
         "anime-sama.to", "fire-force", {},
@@ -444,7 +444,7 @@ def test_plan_located_last_episode_of_split_season_maps_to_final_part(monkeypatc
     monkeypatch.setattr(am, "_fetch_episodes",
                         lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
 
-    located = am._plan_located_episodes(
+    located = am._season_relative_plan(
         object(), "tt5095466", 3, 25, True,
         _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
         "anime-sama.to", "fire-force", {},
@@ -462,7 +462,7 @@ def test_plan_located_full_season_spans_split_cour_folders(monkeypatch):
     monkeypatch.setattr(am, "_fetch_episodes",
                         lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
 
-    located = am._plan_located_episodes(
+    located = am._season_relative_plan(
         object(), "tt5095466", 3, None, True,
         _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
         "anime-sama.to", "fire-force", {},
@@ -481,7 +481,7 @@ def test_plan_located_non_aligned_reads_absolute_from_single_folder(monkeypatch)
     monkeypatch.setattr(am, "_absolute_episode",
                         lambda _s, _imdb, season, ep: 176 if (season, ep) == (5, 1) else None)
 
-    located = am._plan_located_episodes(
+    located = am._season_relative_plan(
         object(), "tt1", 5, 1, False,
         [("Saison 1", "saison1/vostfr")], "vostfr",
         "saison1/vostfr", ft_eps, ft_idx, "anime-sama.to", "fairy-tail", {},
@@ -522,20 +522,34 @@ _DS_COUNTS = {
 }
 
 
-def test_ordered_episode_folders_includes_hors_serie_only_on_demand():
-    # Sans hors-série : dossiers numérotés seuls (film exclu, saison1hs exclu).
-    assert am._ordered_episode_folders(_DS_DECLS, "vostfr", include_hs=False) == [
-        "saison1/vostfr", "saison2/vostfr", "saison3/vostfr", "saison4/vostfr",
-    ]
-    # Avec hors-série : saison1hs réinséré à sa position de diffusion (déclaration).
-    assert am._ordered_episode_folders(_DS_DECLS, "vostfr", include_hs=True) == [
+def test_is_episode_arc_label_matches_only_episode_prefix():
+    assert am._is_episode_arc_label("Épisode - Train de l'infini")   # accents ok
+    assert am._is_episode_arc_label("episode - autre chose")
+    assert not am._is_episode_arc_label("100 Years Quest Saison 1")
+    assert not am._is_episode_arc_label("Film - Train de l'infini")
+    assert not am._is_episode_arc_label("Saison 2")
+
+
+def test_ordered_episode_folders_includes_episode_arc_hors_serie_only():
+    # Demon Slayer : saison1hs (« Épisode - Train de l'infini ») réinséré à sa
+    # position de diffusion et compté comme saison ; film/OAV exclus.
+    assert am._ordered_episode_folders(_DS_DECLS, "vostfr") == [
         "saison1/vostfr", "saison1hs/vostfr", "saison2/vostfr", "saison3/vostfr", "saison4/vostfr",
     ]
+    # Fairy Tail : saison1hs (« 100 Years Quest ») N'EST PAS un « Épisode - ... »
+    # -> exclu (c'est une œuvre distincte), il ne reste que la saison numérotée.
+    fairy_tail = [
+        ("Saison 1", "saison1/vostfr"),
+        ("Film", "film/vostfr"),
+        ("100 Years Quest Saison 1", "saison1hs/vostfr"),
+    ]
+    assert am._ordered_episode_folders(fairy_tail, "vostfr") == ["saison1/vostfr"]
 
 
 def test_absolute_grouping_fire_force_uses_numbered_folders(monkeypatch):
+    # Aucun hors-série : la concaténation = dossiers numérotés (saison3-2 incluse).
     counts = {"saison1/vostfr": 24, "saison2/vostfr": 24,
-              "saison3/vostfr": 12, "saison3-2/vostfr": 13}  # total 73 = TheTVDB
+              "saison3/vostfr": 12, "saison3-2/vostfr": 13}  # 73
     monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 73)
     monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(counts))
     abs_map = {(2, 3): 27, (3, 1): 49, (3, 13): 61, (3, 25): 73}
@@ -554,14 +568,14 @@ def test_absolute_grouping_fire_force_uses_numbered_folders(monkeypatch):
     assert loc(3, 25) == ("saison3-2/vostfr", 13)
 
 
-def test_absolute_grouping_demon_slayer_routes_via_hors_serie(monkeypatch):
-    # Cas piège : anime-sama saison2 = Entertainment (TheTVDB S3), et l'arc Mugen
-    # Train (TheTVDB S2) est rangé en saison1hs. Le contrôle de total force le
-    # regroupement « avec hors-série » (63) et route correctement.
+def test_absolute_grouping_demon_slayer_counts_hors_serie_as_a_season(monkeypatch):
+    # Cœur du problème : l'arc Mugen Train (TheTVDB S2) est rangé en saison1hs,
+    # et anime-sama saison2 = Entertainment (TheTVDB S3), etc. En comptant le
+    # hors-série comme une saison dans la concaténation, l'absolu retombe juste.
     monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
     monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(_DS_COUNTS))
     # Absolus TheTVDB : S1 1-26, S2/Mugen 27-33, S3/Enter 34-44, S4 45-55, S5 56-63.
-    abs_map = {(2, 3): 29, (3, 5): 38, (3, 11): 44, (4, 1): 45, (5, 8): 63}
+    abs_map = {(2, 3): 29, (3, 5): 38, (3, 11): 44, (4, 1): 45, (5, 1): 56, (5, 8): 63}
     monkeypatch.setattr(am, "_absolute_episode", lambda _s, _i, s, e: abs_map.get((s, e)))
     sel_eps, sel_idx = _folder("saison2", 11)
 
@@ -575,7 +589,8 @@ def test_absolute_grouping_demon_slayer_routes_via_hors_serie(monkeypatch):
     assert loc(3, 5) == ("saison2/vostfr", 5)      # Entertainment -> saison2 anime-sama
     assert loc(3, 11) == ("saison2/vostfr", 11)
     assert loc(4, 1) == ("saison3/vostfr", 1)      # Swordsmith -> saison3 anime-sama
-    assert loc(5, 8) == ("saison4/vostfr", 8)      # Hashira -> saison4 anime-sama
+    assert loc(5, 1) == ("saison4/vostfr", 1)      # Piliers (saison 5 Sonarr) -> saison4
+    assert loc(5, 8) == ("saison4/vostfr", 8)
 
 
 def test_absolute_grouping_full_season_demon_slayer(monkeypatch):
@@ -593,21 +608,55 @@ def test_absolute_grouping_full_season_demon_slayer(monkeypatch):
         [(e, "saison2/vostfr", e) for e in range(1, 12)]
 
 
-def test_absolute_grouping_falls_back_when_no_total_matches(monkeypatch):
-    # Arc hors-série absent : ni « numérotés seuls » (56) ni « avec hs » (56)
-    # n'atteignent 63 -> None -> l'appelant bascule sur le repli saison-relatif.
-    counts = {"saison1/vostfr": 26, "saison2/vostfr": 11,
-              "saison3/vostfr": 11, "saison4/vostfr": 8}  # 56
-    decls = [("S1", "saison1/vostfr"), ("S2", "saison2/vostfr"),
-             ("S3", "saison3/vostfr"), ("S4", "saison4/vostfr")]
-    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
-    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(counts))
+def test_absolute_grouping_skipped_when_total_mismatches(monkeypatch):
+    # Contrôle de total : si anime-sama (63) ne colle pas avec les métadonnées,
+    # on renvoie None -> repli saison-relatif. Ici on annonce 70 ≠ 63.
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 70)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(_DS_COUNTS))
     monkeypatch.setattr(am, "_absolute_episode", lambda *_a: 40)
     sel_eps, sel_idx = _folder("saison2", 11)
 
     assert am._absolute_grouping_plan(
-        object(), "tt", 3, 5, decls, "vostfr", "saison2/vostfr",
+        object(), "tt", 3, 5, _DS_DECLS, "vostfr", "saison2/vostfr",
         sel_eps, sel_idx, "anime-sama.to", "demon-slayer", {}) is None
+
+
+def test_absolute_grouping_returns_none_without_metadata(monkeypatch):
+    # Sans total (TheTVDB/TMDB indisponibles) -> None -> repli saison-relatif.
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: None)
+    sel_eps, sel_idx = _folder("saison2", 11)
+
+    assert am._absolute_grouping_plan(
+        object(), "tt", 3, 5, _DS_DECLS, "vostfr", "saison2/vostfr",
+        sel_eps, sel_idx, "anime-sama.to", "demon-slayer", {}) is None
+
+
+def test_preferred_series_language_when_no_exact_season_folder():
+    # Demon Slayer saison 5 : aucun dossier « saison5 » exact, mais des dossiers
+    # d'épisodes en vostfr -> on résout via le regroupement absolu en vostfr.
+    assert am._select_season_path(_DS_DECLS, False, 5) == (None, None)
+    assert am._preferred_series_language(_DS_DECLS) == "vostfr"
+
+
+def test_demon_slayer_season5_resolves_via_absolute_grouping(monkeypatch):
+    # Cœur du bug « saison 5 ne marche pas » : Sonarr saison 5 (Entraînement des
+    # Piliers) = anime-sama saison4, sans dossier saison5. Sans dossier de
+    # départ (season_path=None), le regroupement absolu retrouve le bon dossier.
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(_DS_COUNTS))
+    abs_map = {(5, 1): 56, (5, 8): 63}
+    monkeypatch.setattr(am, "_absolute_episode", lambda _s, _i, s, e: abs_map.get((s, e)))
+
+    lang = am._preferred_series_language(_DS_DECLS)
+
+    def loc(ep):
+        r = am._plan_located_episodes(
+            object(), "tt", 5, ep, False, _DS_DECLS, lang,
+            None, {}, {}, "anime-sama.to", "demon-slayer", {})
+        return (r[0][1], r[0][4]) if r else None
+
+    assert loc(1) == ("saison4/vostfr", 1)   # 1er épisode de la saison 5 Sonarr
+    assert loc(8) == ("saison4/vostfr", 8)   # dernier
 
 
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):

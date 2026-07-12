@@ -434,6 +434,19 @@ def _select_season_path(declarations, is_movie, season_num):
     return None, None
 
 
+def _preferred_series_language(declarations):
+    """Langue à utiliser pour une série quand aucun ``saisonN`` exact n'existe.
+
+    Renvoie la première langue (ordre de préférence) qui possède au moins un
+    dossier d'épisodes — arcs hors-série inclus, puisqu'ils comptent comme des
+    saisons (cf. Demon Slayer). None si la série n'a aucun dossier exploitable.
+    """
+    for lang in LANGUAGES:
+        if _ordered_episode_folders(declarations, lang):
+            return lang
+    return None
+
+
 def _fetch_episodes(shared_state, am, slug, season_path, headers):
     url = f"https://{am}/catalogue/{slug}/{season_path}/episodes.js"
     try:
@@ -677,20 +690,35 @@ def _fetch_episodes_cached(shared_state, am, slug, path, headers):
     return result
 
 
-def _ordered_episode_folders(declarations, language, include_hs):
-    """Dossiers d'épisodes TV dans l'ordre de déclaration (= ordre de diffusion).
+_EPISODE_ARC_LABEL_RE = re.compile(r"\s*episode\s*-", re.I)
 
-    ``include_hs`` ajoute les arcs hors-série ``saisonNhs`` (ex. Demon Slayer :
-    l'arc du Train de l'infini, rangé hors-série alors que TheTVDB le compte
-    comme une saison). Films / OAV / autres restent toujours exclus.
+
+def _is_episode_arc_label(label):
+    """Vrai si le libellé est « Épisode - ... » : un arc rangé en hors-série mais
+    qui est en réalité une saison à part entière (Demon Slayer : « Épisode - Train
+    de l'infini »). Les autres hors-série (« 100 Years Quest ... ») ne matchent
+    pas et restent exclus. Insensible à la casse et aux accents.
     """
-    if include_hs:
-        pattern = re.compile(rf"saison\d+(?:-\d+)?(?:hs)?/{re.escape(language)}", re.I)
-    else:
-        pattern = re.compile(rf"saison\d+(?:-\d+)?/{re.escape(language)}", re.I)
+    normalized = unicodedata.normalize("NFD", label or "")
+    normalized = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    return bool(_EPISODE_ARC_LABEL_RE.match(normalized))
+
+
+def _ordered_episode_folders(declarations, language):
+    """Dossiers-saisons dans l'ordre de déclaration (= ordre de diffusion).
+
+    Inclut les dossiers numérotés ``saisonN`` / ``saisonN-M`` ET les arcs rangés
+    en hors-série ``saisonNhs`` DONT le libellé est « Épisode - ... » (ils sont
+    des saisons normales, ex. Demon Slayer). Les autres hors-série
+    (« 100 Years Quest »), films, OAV, etc. restent exclus.
+    """
+    numbered = re.compile(rf"saison\d+(?:-\d+)?/{re.escape(language)}", re.I)
+    hors_serie = re.compile(rf"saison\d+hs/{re.escape(language)}", re.I)
     ordered, seen = [], set()
-    for _label, path in declarations or []:
-        if path not in seen and pattern.fullmatch(path):
+    for label, path in declarations or []:
+        if path in seen:
+            continue
+        if numbered.fullmatch(path) or (hors_serie.fullmatch(path) and _is_episode_arc_label(label)):
             seen.add(path)
             ordered.append(path)
     return ordered
@@ -699,9 +727,8 @@ def _ordered_episode_folders(declarations, language, include_hs):
 def _series_total_episodes(shared_state, imdb_id):
     """Total d'épisodes attendu (TheTVDB d'abord, somme des saisons TMDB sinon).
 
-    Contrôle du regroupement absolu : on ne retient une concaténation de dossiers
-    anime-sama que si son total colle avec ce nombre. On lit TheTVDB en priorité
-    pour rester cohérent avec ``_absolute_episode``.
+    Contrôle du regroupement absolu : on ne retient la concaténation des dossiers
+    anime-sama que si son total colle avec ce nombre.
     """
     total = tvdb_total_absolute_numbers(shared_state, imdb_id)
     if total:
@@ -739,34 +766,29 @@ def _absolute_grouping_plan(shared_state, imdb_id, season_num, episode_num,
                             am, slug, headers):
     """Méthode principale : regrouper les épisodes anime-sama par numéro absolu.
 
-    On concatène les dossiers dans l'ordre de diffusion pour former une séquence
-    absolue, et on ne s'en sert QUE si son total colle avec TheTVDB. Deux
-    regroupements sont tentés : dossiers numérotés seuls, puis avec les arcs
-    hors-série (Demon Slayer range l'arc du Train de l'infini en hors-série alors
-    que TheTVDB le compte comme la saison 2). L'épisode demandé (ou toute la
-    saison) est converti en absolu via TheTVDB puis lu à sa position dans la
-    concaténation. Retourne ``None`` si aucun total ne correspond : l'appelant
-    bascule alors sur la méthode saison-relative.
+    On concatène les dossiers-saisons dans l'ordre de diffusion — arcs
+    « Épisode - ... » rangés en hors-série inclus, car ce sont des saisons
+    normales : chez anime-sama l'arc du Train de l'infini (Demon Slayer) est un
+    hors-série alors que TheTVDB en fait la saison 2, ce qui décale toutes les
+    suivantes. La concaténation n'est retenue que si son total colle avec
+    TheTVDB (contrôle). La position i = numéro absolu i+1 ; l'épisode Sonarr
+    demandé (ou toute la saison) est converti en absolu via TheTVDB (TMDB en
+    secours) puis lu à sa position. Retourne ``None`` si le total ne correspond
+    pas ou si la conversion échoue : l'appelant bascule sur la méthode
+    saison-relative.
     """
     expected_total = _series_total_episodes(shared_state, imdb_id)
     if not expected_total:
         return None
-
+    folders = _ordered_episode_folders(declarations, language)
     preloaded = (season_path, eps_map, episode_indices)
-    concat = None
-    for include_hs in (False, True):
-        folders = _ordered_episode_folders(declarations, language, include_hs)
-        candidate = _build_absolute_concat(shared_state, folders, preloaded, am, slug, headers)
-        if candidate and len(candidate) == expected_total:
-            concat = candidate
-            debug(f"{hostname.upper()} absolute grouping for {slug}: {len(concat)} episodes "
-                  f"(hors-série {'inclus' if include_hs else 'exclus'})")
-            break
-
-    if concat is None:
-        debug(f"{hostname.upper()} absolute grouping skipped for {slug}: no folder set "
-              f"matched metadata total {expected_total}")
+    concat = _build_absolute_concat(shared_state, folders, preloaded, am, slug, headers)
+    if not concat or len(concat) != expected_total:
+        debug(f"{hostname.upper()} absolute grouping skipped for {slug}: anime-sama="
+              f"{len(concat)} vs metadata={expected_total}")
         return None
+    debug(f"{hostname.upper()} absolute grouping for {slug}: {len(concat)} episodes "
+          f"across {len(folders)} folder(s)")
 
     def locate(absolute):
         if absolute and 1 <= absolute <= len(concat):
@@ -910,23 +932,36 @@ def am_search(shared_state, start_time, request_from, search_string,
     episode_num = _coerce_int(episode)
 
     season_path, language = _select_season_path(declarations, is_movie, season_num)
-    if not season_path:
+    if not season_path and not is_movie and season_num is not None:
+        # Aucun dossier « saisonN » exact : numérotation anime-sama décalée par un
+        # arc hors-série compté comme saison (Demon Slayer : pas de saison5). On
+        # ne renonce pas — le regroupement absolu (qui parcourt tous les dossiers)
+        # retrouvera le bon. On a juste besoin de la langue.
+        language = _preferred_series_language(declarations)
+        if language:
+            debug(f"{hostname.upper()} no exact saison{season_num} folder for '{slug}'; "
+                  f"resolving via absolute grouping (lang={language})")
+    if not language:
         debug(f"{hostname.upper()} no {'/'.join(LANGUAGES)} season path for slug "
               f"'{slug}' (movie={is_movie}, season={season})")
         return releases
     language_tag = _LANGUAGE_TAGS.get(language, language.upper())
     release_suffix = f"{language_tag}.{RELEASE_QUALITY}"
-    debug(f"{hostname.upper()} using {season_path} (lang={language}) for {slug}")
 
-    eps_map, episode_indices, am = _fetch_episodes(
-        shared_state, am, slug, season_path, headers
-    )
-    if not eps_map:
-        debug(f"{hostname.upper()} episodes.js empty for {slug}/{season_path}")
-        return releases
+    # Dossier sélectionné (s'il existe) : sert de préchargement au regroupement
+    # absolu et de base au film / au repli saison-relatif. Sinon on part à vide.
+    if season_path:
+        debug(f"{hostname.upper()} using {season_path} (lang={language}) for {slug}")
+        eps_map, episode_indices, am = _fetch_episodes(
+            shared_state, am, slug, season_path, headers
+        )
+        if not eps_map:
+            debug(f"{hostname.upper()} episodes.js empty for {slug}/{season_path}")
+            return releases
+    else:
+        eps_map, episode_indices = {}, {}
 
-    longest = max(len(urls) for urls in eps_map.values())
-    base_source = f"https://{am}/catalogue/{slug}/{season_path}/"
+    base_source = f"https://{am}/catalogue/{slug}/{season_path}/" if season_path else ""
     seen_titles = set()  # évite les doublons quand deux variantes donnent le même titre
 
     if is_movie:

@@ -139,9 +139,9 @@ def get_total_absolute_numbers(shared_state, imdb_id):
     """Plus grand numéro absolu connu de TheTVDB (≈ nombre total d'épisodes).
 
     Sert de contrôle au regroupement absolu d'anime-sama : on ne fait confiance
-    à la concaténation des dossiers que si son total colle avec ce nombre. On
-    lit la même source (``absoluteNumber``) que ``get_absolute_number`` pour
-    rester cohérent. None si TheTVDB est indisponible.
+    à la concaténation des dossiers que si son total colle avec ce nombre. Même
+    source (``absoluteNumber``) que ``get_absolute_number`` pour rester cohérent.
+    None si TheTVDB est indisponible.
     """
     series_id = _series_id(imdb_id)
     if not series_id:
