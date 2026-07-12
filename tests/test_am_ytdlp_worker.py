@@ -490,6 +490,126 @@ def test_plan_located_non_aligned_reads_absolute_from_single_folder(monkeypatch)
     assert located == [(1, "saison1/vostfr", ft_eps, ft_idx, 176, "anime-sama.to")]
 
 
+# ---- Méthode principale : regroupement par numéro absolu (contrôle de total) ----
+
+def _folder(prefix, n):
+    """Fabrique (eps_map, indices) d'un dossier de n épisodes contigus."""
+    return {"eps1": [f"https://{prefix}/{i}" for i in range(1, n + 1)]}, {i: i - 1 for i in range(1, n + 1)}
+
+
+def _fetch_from(counts):
+    """Faux _fetch_episodes_cached renvoyant le dossier correspondant au chemin."""
+    data = {path: _folder(path.split("/")[0], n) for path, n in counts.items()}
+
+    def _fetch(_s, _am, _slug, path, _h):
+        eps, idx = data[path]
+        return eps, idx, "anime-sama.to"
+    return _fetch
+
+
+_DS_DECLS = [
+    ("Saison 1", "saison1/vostfr"),
+    ("Film - Train de l'infini", "film1/vostfr"),
+    ("Épisode - Train de l'infini", "saison1hs/vostfr"),
+    ("Saison 2", "saison2/vostfr"),
+    ("Saison 3", "saison3/vostfr"),
+    ("Saison 4", "saison4/vostfr"),
+    ("Film - La Forteresse Infinie", "film2/vostfr"),
+]
+_DS_COUNTS = {
+    "saison1/vostfr": 26, "saison1hs/vostfr": 7, "saison2/vostfr": 11,
+    "saison3/vostfr": 11, "saison4/vostfr": 8,
+}
+
+
+def test_ordered_episode_folders_includes_hors_serie_only_on_demand():
+    # Sans hors-série : dossiers numérotés seuls (film exclu, saison1hs exclu).
+    assert am._ordered_episode_folders(_DS_DECLS, "vostfr", include_hs=False) == [
+        "saison1/vostfr", "saison2/vostfr", "saison3/vostfr", "saison4/vostfr",
+    ]
+    # Avec hors-série : saison1hs réinséré à sa position de diffusion (déclaration).
+    assert am._ordered_episode_folders(_DS_DECLS, "vostfr", include_hs=True) == [
+        "saison1/vostfr", "saison1hs/vostfr", "saison2/vostfr", "saison3/vostfr", "saison4/vostfr",
+    ]
+
+
+def test_absolute_grouping_fire_force_uses_numbered_folders(monkeypatch):
+    counts = {"saison1/vostfr": 24, "saison2/vostfr": 24,
+              "saison3/vostfr": 12, "saison3-2/vostfr": 13}  # total 73 = TheTVDB
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 73)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(counts))
+    abs_map = {(2, 3): 27, (3, 1): 49, (3, 13): 61, (3, 25): 73}
+    monkeypatch.setattr(am, "_absolute_episode", lambda _s, _i, s, e: abs_map.get((s, e)))
+    sel_eps, sel_idx = _folder("saison3", 12)
+
+    def loc(season, ep):
+        r = am._absolute_grouping_plan(
+            object(), "tt", season, ep, _FIRE_FORCE_DECLS, "vostfr",
+            "saison3/vostfr", sel_eps, sel_idx, "anime-sama.to", "fire-force", {})
+        return (r[0][1], r[0][4]) if r else None
+
+    assert loc(2, 3) == ("saison2/vostfr", 3)
+    assert loc(3, 1) == ("saison3/vostfr", 1)
+    assert loc(3, 13) == ("saison3-2/vostfr", 1)     # bascule dans la Partie 2
+    assert loc(3, 25) == ("saison3-2/vostfr", 13)
+
+
+def test_absolute_grouping_demon_slayer_routes_via_hors_serie(monkeypatch):
+    # Cas piège : anime-sama saison2 = Entertainment (TheTVDB S3), et l'arc Mugen
+    # Train (TheTVDB S2) est rangé en saison1hs. Le contrôle de total force le
+    # regroupement « avec hors-série » (63) et route correctement.
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(_DS_COUNTS))
+    # Absolus TheTVDB : S1 1-26, S2/Mugen 27-33, S3/Enter 34-44, S4 45-55, S5 56-63.
+    abs_map = {(2, 3): 29, (3, 5): 38, (3, 11): 44, (4, 1): 45, (5, 8): 63}
+    monkeypatch.setattr(am, "_absolute_episode", lambda _s, _i, s, e: abs_map.get((s, e)))
+    sel_eps, sel_idx = _folder("saison2", 11)
+
+    def loc(season, ep):
+        r = am._absolute_grouping_plan(
+            object(), "tt", season, ep, _DS_DECLS, "vostfr",
+            "saison2/vostfr", sel_eps, sel_idx, "anime-sama.to", "demon-slayer", {})
+        return (r[0][1], r[0][4]) if r else None
+
+    assert loc(2, 3) == ("saison1hs/vostfr", 3)   # arc Mugen Train -> hors-série
+    assert loc(3, 5) == ("saison2/vostfr", 5)      # Entertainment -> saison2 anime-sama
+    assert loc(3, 11) == ("saison2/vostfr", 11)
+    assert loc(4, 1) == ("saison3/vostfr", 1)      # Swordsmith -> saison3 anime-sama
+    assert loc(5, 8) == ("saison4/vostfr", 8)      # Hashira -> saison4 anime-sama
+
+
+def test_absolute_grouping_full_season_demon_slayer(monkeypatch):
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(_DS_COUNTS))
+    # Saison 3 Sonarr (Entertainment) = absolus 34..44.
+    monkeypatch.setattr(am, "_absolute_season_plan",
+                        lambda _s, _i, season: [(e, 33 + e) for e in range(1, 12)] if season == 3 else [])
+    sel_eps, sel_idx = _folder("saison2", 11)
+
+    located = am._absolute_grouping_plan(
+        object(), "tt", 3, None, _DS_DECLS, "vostfr",
+        "saison2/vostfr", sel_eps, sel_idx, "anime-sama.to", "demon-slayer", {})
+    assert [(ep, p, l) for ep, p, _e, _i, l, _a in located] == \
+        [(e, "saison2/vostfr", e) for e in range(1, 12)]
+
+
+def test_absolute_grouping_falls_back_when_no_total_matches(monkeypatch):
+    # Arc hors-série absent : ni « numérotés seuls » (56) ni « avec hs » (56)
+    # n'atteignent 63 -> None -> l'appelant bascule sur le repli saison-relatif.
+    counts = {"saison1/vostfr": 26, "saison2/vostfr": 11,
+              "saison3/vostfr": 11, "saison4/vostfr": 8}  # 56
+    decls = [("S1", "saison1/vostfr"), ("S2", "saison2/vostfr"),
+             ("S3", "saison3/vostfr"), ("S4", "saison4/vostfr")]
+    monkeypatch.setattr(am, "_series_total_episodes", lambda _s, _i: 63)
+    monkeypatch.setattr(am, "_fetch_episodes_cached", _fetch_from(counts))
+    monkeypatch.setattr(am, "_absolute_episode", lambda *_a: 40)
+    sel_eps, sel_idx = _folder("saison2", 11)
+
+    assert am._absolute_grouping_plan(
+        object(), "tt", 3, 5, decls, "vostfr", "saison2/vostfr",
+        sel_eps, sel_idx, "anime-sama.to", "demon-slayer", {}) is None
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"
