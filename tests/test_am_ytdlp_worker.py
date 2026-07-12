@@ -357,6 +357,139 @@ def test_overflow_is_rejected_when_imdb_metadata_has_no_requested_episode(monkey
     ) is None
 
 
+# Layout réel de Fire Force sur anime-sama : la saison 3 de TheTVDB (25 ép.) est
+# scindée en deux dossiers « Partie 1 » (saison3, 12 ép.) et « Partie 2 »
+# (saison3-2, 13 ép.). saison1hs = hors-série (œuvre distincte), jamais une suite.
+_FIRE_FORCE_DECLS = [
+    ("Saison 1", "saison1/vostfr"),
+    ("Saison 2", "saison2/vostfr"),
+    ("Saison 3 Partie 1", "saison3/vostfr"),
+    ("Saison 3 Partie 2", "saison3-2/vostfr"),
+]
+
+
+def test_split_cour_part_folder_is_ordered_after_its_first_part():
+    # saison3-2 doit suivre saison3 (et non être ignorée) ; un hors-série reste exclu.
+    decls = _FIRE_FORCE_DECLS + [("100 Years HS", "saison3hs/vostfr")]
+    assert am._numbered_season_paths(decls, "vostfr") == [
+        "saison1/vostfr", "saison2/vostfr", "saison3/vostfr", "saison3-2/vostfr",
+    ]
+    # La sélection de saison trouve toujours la Partie 1 pour la saison 3.
+    assert am._season_path_for_language(_FIRE_FORCE_DECLS, False, 3, "vostfr") == "saison3/vostfr"
+
+
+def test_fire_force_s3e13_overflows_into_part_two_folder(monkeypatch):
+    # S3E13 (Sonarr/TheTVDB) = 1er épisode de la Partie 2 : 12 ép. en saison3,
+    # puis débordement dans saison3-2 à l'épisode 1.
+    part_two_eps = {"eps2": [f"https://vidmoly.to/embed-{n}.html" for n in range(1, 14)]}
+    part_two_indices = {number: number - 1 for number in range(1, 14)}
+
+    monkeypatch.setattr(am, "_absolute_season_plan",
+                        lambda _state, imdb_id, season:
+                        [(n, n) for n in range(1, 26)] if season == 3 else [])
+    monkeypatch.setattr(am, "_fetch_episodes",
+                        lambda *_args: (part_two_eps, part_two_indices, "anime-sama.to"))
+
+    resolved = am._find_overflow_episode_source(
+        object(), "tt5095466", 3, 13,
+        _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr",
+        {"eps1": ["u"] * 12}, {number: number - 1 for number in range(1, 13)},
+        "anime-sama.to", "fire-force", {},
+    )
+
+    assert resolved is not None, "S3E13 doit déborder vers la Partie 2"
+    path, _eps_map, episode_indices, local_episode, _host = resolved
+    assert path == "saison3-2/vostfr"
+    assert local_episode == 1
+    assert episode_indices[local_episode] == 0  # 1er épisode de la Partie 2
+
+
+# Données Fire Force réutilisées : Partie 1 (12 ép.) + Partie 2 (13 ép.) = 25.
+_FF_S3_IDX = {n: n - 1 for n in range(1, 13)}
+_FF_S3_EPS = {"eps1": [f"https://s3/{n}" for n in range(1, 13)]}
+_FF_S32_IDX = {n: n - 1 for n in range(1, 14)}
+_FF_S32_EPS = {"eps2": [f"https://vidmoly.to/embed-{n}.html" for n in range(1, 14)]}
+
+
+def test_plan_located_episode_direct_then_overflow(monkeypatch):
+    # Épisode présent dans le dossier -> mapping direct, sans aucune requête.
+    def _no_fetch(*_a, **_k):
+        raise AssertionError("aucune requête ne doit être faite pour un mapping direct")
+    monkeypatch.setattr(am, "_fetch_episodes", _no_fetch)
+    direct = am._plan_located_episodes(
+        object(), "tt5095466", 3, 5, True,
+        _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
+        "anime-sama.to", "fire-force", {},
+    )
+    assert direct == [(5, "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX, 5, "anime-sama.to")]
+
+    # Épisode 13 -> débordement vers saison3-2 épisode local 1.
+    monkeypatch.setattr(am, "_absolute_season_plan",
+                        lambda _s, _imdb, season: [(n, n) for n in range(1, 26)] if season == 3 else [])
+    monkeypatch.setattr(am, "_fetch_episodes",
+                        lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
+    overflow = am._plan_located_episodes(
+        object(), "tt5095466", 3, 13, True,
+        _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
+        "anime-sama.to", "fire-force", {},
+    )
+    assert overflow == [(13, "saison3-2/vostfr", _FF_S32_EPS, _FF_S32_IDX, 1, "anime-sama.to")]
+
+
+def test_plan_located_last_episode_of_split_season_maps_to_final_part(monkeypatch):
+    # Limite haute : S3E25 (dernier de la saison TheTVDB) = dernier épisode de la
+    # Partie 2. 12 ép. en saison3, reste 13 -> saison3-2 épisode local 13.
+    monkeypatch.setattr(am, "_absolute_season_plan",
+                        lambda _s, _imdb, season: [(n, n) for n in range(1, 26)] if season == 3 else [])
+    monkeypatch.setattr(am, "_fetch_episodes",
+                        lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
+
+    located = am._plan_located_episodes(
+        object(), "tt5095466", 3, 25, True,
+        _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
+        "anime-sama.to", "fire-force", {},
+    )
+    assert located == [(25, "saison3-2/vostfr", _FF_S32_EPS, _FF_S32_IDX, 13, "anime-sama.to")]
+    # L'index local 13 pointe bien sur la dernière entrée du dossier Partie 2.
+    assert _FF_S32_IDX[located[0][4]] == 12
+
+
+def test_plan_located_full_season_spans_split_cour_folders(monkeypatch):
+    # Recherche « saison 3 » entière : les 25 épisodes doivent sortir, répartis
+    # sur les deux dossiers (auparavant seuls les 12 de la Partie 1 sortaient).
+    monkeypatch.setattr(am, "_absolute_season_plan",
+                        lambda _s, _imdb, season: [(n, n) for n in range(1, 26)] if season == 3 else [])
+    monkeypatch.setattr(am, "_fetch_episodes",
+                        lambda _s, _am, _slug, path, _h: (_FF_S32_EPS, _FF_S32_IDX, "anime-sama.to"))
+
+    located = am._plan_located_episodes(
+        object(), "tt5095466", 3, None, True,
+        _FIRE_FORCE_DECLS, "vostfr", "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX,
+        "anime-sama.to", "fire-force", {},
+    )
+
+    assert [ep for ep, *_ in located] == list(range(1, 26))
+    assert located[11] == (12, "saison3/vostfr", _FF_S3_EPS, _FF_S3_IDX, 12, "anime-sama.to")
+    assert located[12] == (13, "saison3-2/vostfr", _FF_S32_EPS, _FF_S32_IDX, 1, "anime-sama.to")
+    assert located[24] == (25, "saison3-2/vostfr", _FF_S32_EPS, _FF_S32_IDX, 13, "anime-sama.to")
+
+
+def test_plan_located_non_aligned_reads_absolute_from_single_folder(monkeypatch):
+    # Fairy Tail : pas de dossier saison5, tout est en absolu dans saison1.
+    ft_idx = {n: n - 1 for n in range(1, 329)}
+    ft_eps = {"eps1": [f"https://s1/{n}" for n in range(1, 329)]}
+    monkeypatch.setattr(am, "_absolute_episode",
+                        lambda _s, _imdb, season, ep: 176 if (season, ep) == (5, 1) else None)
+
+    located = am._plan_located_episodes(
+        object(), "tt1", 5, 1, False,
+        [("Saison 1", "saison1/vostfr")], "vostfr",
+        "saison1/vostfr", ft_eps, ft_idx, "anime-sama.to", "fairy-tail", {},
+    )
+    # S5E1 (Sonarr) -> épisode absolu 176 lu dans le dossier unique.
+    assert located == [(1, "saison1/vostfr", ft_eps, ft_idx, 176, "anime-sama.to")]
+
+
 def test_output_tree_inherits_parent_ownership(tmp_path, monkeypatch):
     output = tmp_path / "output"
     folder = output / "Episode"

@@ -399,12 +399,12 @@ def _season_path_for_language(declarations, is_movie, season_num, lang):
                 return path
         return None
 
-    # Uniquement les dossiers « saisonN » réellement numérotés. Le
-    # ``startswith("saison")`` naïf attrapait aussi les hors-séries type
-    # « saison1hs » (Fairy Tail : 100 Years Quest) : leur présence faisait
-    # croire à plusieurs saisons et cassait le repli absolu ci-dessous. On
-    # s'aligne sur le motif strict de ``_numbered_season_paths``.
-    season_re = re.compile(rf"saison\d+/{re.escape(lang)}", re.I)
+    # Uniquement les dossiers « saisonN » réellement numérotés (parties
+    # « saisonN-M » incluses). Le ``startswith("saison")`` naïf attrapait aussi
+    # les hors-séries type « saison1hs » (Fairy Tail : 100 Years Quest) : leur
+    # présence faisait croire à plusieurs saisons et cassait le repli absolu
+    # ci-dessous. On s'aligne sur le motif de ``_numbered_season_paths``.
+    season_re = re.compile(rf"saison\d+(?:-\d+)?/{re.escape(lang)}", re.I)
     saisons = [p for p in matching if season_re.fullmatch(p)]
     if not saisons:
         return None
@@ -563,14 +563,24 @@ def _absolute_season_plan(shared_state, imdb_id, season_num):
 
 
 def _numbered_season_paths(declarations, language):
-    """Retourne les dossiers saison d'une langue triés numériquement."""
+    """Retourne les dossiers saison d'une langue triés numériquement.
+
+    Gère les saisons scindées en parties (« Partie 2 ») qu'Anime-Sama nomme
+    ``saisonN-M`` : ex. Fire Force expose ``saison3`` puis ``saison3-2`` alors que
+    TheTVDB compte une seule saison 3 (25 épisodes). On les ordonne par (N, M)
+    pour que le suivi d'overflow enchaîne saison3 -> saison3-2. Les hors-séries
+    ``saisonNhs`` (ex. Fairy Tail 100 Years Quest) ne matchent pas et restent
+    exclus : ce sont des œuvres distinctes, pas la suite d'une saison.
+    """
     paths = []
-    pattern = re.compile(rf"^saison(\d+)/{re.escape(language)}$", re.I)
+    pattern = re.compile(rf"^saison(\d+)(?:-(\d+))?/{re.escape(language)}$", re.I)
     for _label, path in declarations or []:
         match = pattern.fullmatch(path)
         if match:
-            paths.append((int(match.group(1)), path))
-    return [path for _number, path in sorted(paths)]
+            season = int(match.group(1))
+            part = int(match.group(2)) if match.group(2) else 1
+            paths.append((season, part, path))
+    return [path for _season, _part, path in sorted(paths)]
 
 
 def _find_overflow_episode_source(shared_state, imdb_id, season_num, episode_num,
@@ -610,6 +620,92 @@ def _find_overflow_episode_source(shared_state, imdb_id, season_num, episode_num
         if remaining <= 0:
             return None
     return None
+
+
+def _subsequent_part_episodes(shared_state, declarations, language, after_path,
+                              am, slug, headers, needed):
+    """Épisodes des dossiers-parties situés APRÈS ``after_path``.
+
+    Sert à compléter une saison Sonarr éclatée sur plusieurs dossiers anime-sama
+    (ex. saison3 puis saison3-2). Retourne au plus ``needed`` entrées
+    ``(path, eps_map, indices, ep_local, am)`` dans l'ordre de diffusion.
+    """
+    if needed <= 0:
+        return []
+    paths = _numbered_season_paths(declarations, language)
+    try:
+        start = paths.index(after_path)
+    except ValueError:
+        return []
+    flat = []
+    current_am = am
+    for path in paths[start + 1:]:
+        eps_map, episode_indices, current_am = _fetch_episodes(
+            shared_state, current_am, slug, path, headers
+        )
+        if not eps_map or not episode_indices:
+            break
+        for local in sorted(episode_indices):
+            flat.append((path, eps_map, episode_indices, local, current_am))
+            if len(flat) >= needed:
+                return flat
+    return flat
+
+
+def _plan_located_episodes(shared_state, imdb_id, season_num, episode_num, aligned,
+                           declarations, language, season_path, eps_map, episode_indices,
+                           am, slug, headers):
+    """Localise chaque épisode Sonarr dans son dossier anime-sama.
+
+    Retourne ``[(ep_sonarr, path, eps_map, indices, ep_local, am), ...]``. Comme
+    une saison TheTVDB peut être éclatée en plusieurs dossiers (« parties »),
+    chaque épisode conserve son propre dossier / index / hôte.
+
+    - Aligné + épisode présent dans le dossier : mapping direct (le plus
+      robuste, sans requête supplémentaire).
+    - Aligné + épisode au-delà du dossier : suivi des parties suivantes
+      (saison3 -> saison3-2), aussi bien pour un épisode que pour la saison
+      entière.
+    - Non aligné (dossier unique en absolu, ex. Fairy Tail) : conversion
+      S/E -> numéro absolu via TheTVDB (TMDB en secours), lue dans ce dossier.
+    """
+    if aligned:
+        if episode_num is not None:
+            if episode_num in episode_indices:
+                return [(episode_num, season_path, eps_map, episode_indices, episode_num, am)]
+            overflow = _find_overflow_episode_source(
+                shared_state, imdb_id, season_num, episode_num,
+                declarations, language, season_path,
+                eps_map, episode_indices, am, slug, headers,
+            )
+            if not overflow:
+                return []
+            path, o_eps, o_idx, local, o_am = overflow
+            return [(episode_num, path, o_eps, o_idx, local, o_am)]
+
+        # Saison entière : le dossier sélectionné démarre la saison ; on la
+        # complète avec les parties suivantes si TheTVDB annonce plus d'épisodes
+        # que ce dossier n'en contient (cas saison éclatée).
+        selected = sorted(episode_indices)
+        located = [(e, season_path, eps_map, episode_indices, e, am) for e in selected]
+        plan = _absolute_season_plan(shared_state, imdb_id, season_num)
+        if plan and len(plan) > len(selected):
+            extra = _subsequent_part_episodes(
+                shared_state, declarations, language, season_path,
+                am, slug, headers, len(plan) - len(selected),
+            )
+            for offset, (path, e_map, e_idx, local, e_am) in enumerate(extra):
+                located.append((len(selected) + 1 + offset, path, e_map, e_idx, local, e_am))
+        return located
+
+    # Non aligné : dossier unique en numérotation absolue.
+    if episode_num is not None:
+        anime_ep = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
+        if not anime_ep:
+            return []
+        return [(episode_num, season_path, eps_map, episode_indices, anime_ep, am)]
+    return [(ep, season_path, eps_map, episode_indices, absolute, am)
+            for ep, absolute in _absolute_season_plan(shared_state, imdb_id, season_num)]
 
 
 def am_search(shared_state, start_time, request_from, search_string,
@@ -700,56 +796,35 @@ def am_search(shared_state, start_time, request_from, search_string,
         # Sonarr : un épisode précis, ou toute la saison si aucun épisode demandé.
         season_for_tag = season_num if season_num is not None else 1
 
-        # "Aligné" = anime-sama possède le dossier de la saison demandée
-        # (ex. Attack on Titan : saison1..4). Sinon anime-sama range tout en
-        # absolu dans un seul dossier (ex. Fairy Tail) : on convertit alors S/E
-        # → numéro absolu via TheTVDB (la source qu'utilise Sonarr), TMDB en
-        # secours. Le titre renvoyé reste en SxxExx (ce que Sonarr attend).
-        # episode_plan = [(épisode_Sonarr, numéro_anime_sama), ...]
+        # Principe unifié : on traduit la demande (saison/épisode) vers le bon
+        # dossier anime-sama en suivant les épisodes de proche en proche. Une
+        # saison TheTVDB peut être « alignée » (anime-sama a le dossier saisonN),
+        # éclatée en parties (saison3 + saison3-2) ou rangée en absolu dans un
+        # dossier unique (Fairy Tail). _plan_located_episodes gère les trois et
+        # renvoie, PAR épisode Sonarr, son dossier/index/hôte propres.
         requested_path = f"saison{season_num}/{language}" if season_num is not None else None
         aligned = (requested_path is None) or (season_path.lower() == requested_path)
-        overflow_episode = None
 
-        if aligned and season_num is not None and episode_num is not None \
-                and episode_num not in episode_indices:
-            overflow = _find_overflow_episode_source(
-                shared_state, imdb_id, season_num, episode_num,
-                declarations, language, season_path,
-                eps_map, episode_indices, am, slug, headers,
-            )
-            if overflow:
-                season_path, eps_map, episode_indices, overflow_episode, am = overflow
-                longest = max(len(urls) for urls in eps_map.values())
-                base_source = f"https://{am}/catalogue/{slug}/{season_path}/"
-                debug(f"{hostname.upper()} IMDb overflow mapping {slug} "
-                      f"S{season_num:02d}E{episode_num:02d} -> "
-                      f"{season_path} EPISODE {overflow_episode}")
+        located = _plan_located_episodes(
+            shared_state, imdb_id, season_num, episode_num, aligned,
+            declarations, language, season_path, eps_map, episode_indices,
+            am, slug, headers,
+        )
+        if not located:
+            suffix = f"E{episode_num}" if episode_num is not None else ""
+            debug(f"{hostname.upper()} could not map S{season_num}{suffix} for {slug}")
+            return releases
 
-        if aligned:
-            if episode_num is not None:
-                episode_plan = [(episode_num, overflow_episode or episode_num)]
-            else:
-                episode_plan = [(e, e) for e in sorted(episode_indices)]
-        else:
-            if episode_num is not None:
-                anime_ep = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
-                episode_plan = [(episode_num, anime_ep)] if anime_ep else []
-            else:
-                episode_plan = _absolute_season_plan(shared_state, imdb_id, season_num)
-            if not episode_plan:
-                debug(f"{hostname.upper()} cannot map S{season_num} to absolute for {slug}")
-                return releases
-            debug(f"{hostname.upper()} absolute mapping {slug} S{season_num}: {episode_plan[:5]}...")
-
-        for ep, anime_ep in episode_plan:
-            source_index = episode_indices.get(anime_ep)
+        for ep, part_path, part_eps, part_idx, ep_local, part_am in located:
+            source_index = part_idx.get(ep_local)
             if source_index is None:
-                debug(f"{hostname.upper()} ignored non-exact or missing EPISODE {anime_ep} "
-                      f"for {slug}/{season_path}")
+                debug(f"{hostname.upper()} ignored non-exact or missing EPISODE {ep_local} "
+                      f"for {slug}/{part_path}")
                 continue
-            candidates = _candidates_for_index(eps_map, source_index)
+            candidates = _candidates_for_index(part_eps, source_index)
             if not candidates:
                 continue
+            base_source = f"https://{part_am}/catalogue/{slug}/{part_path}/"
             tag = f"S{season_for_tag:02d}E{ep:02d}"
             # Une release par lecteur disponible (Sonarr peut les essayer chacun).
             for embed_url in candidates:
