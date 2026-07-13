@@ -961,7 +961,12 @@ def _kai_located_episodes(shared_state, imdb_id, season_num, episode_num,
                 located.append((position, kai_map[saga], keps, kidx, local, current_am))
         return True, located
 
-    absolute = _absolute_episode(shared_state, imdb_id, season_num, episode_num)
+    # Absolu de TheTVDB UNIQUEMENT (la source qu'utilise Sonarr). Pas de repli
+    # TMDB ici : TheTVDB et TMDB divergent sur la structure de certaines séries
+    # (One Piece : TheTVDB S1=8 ép -> S2E1=absolu 9 ; TMDB S1=61). Utiliser TMDB
+    # donnerait un absolu incompatible avec la numérotation Sonarr, donc le
+    # mauvais film kai. Sans TheTVDB on préfère ne rien renvoyer.
+    absolute = tvdb_absolute_number(shared_state, imdb_id, season_num, episode_num)
     if not absolute:
         return True, []
 
