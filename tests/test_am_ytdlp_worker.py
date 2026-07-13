@@ -686,8 +686,8 @@ def test_kai_per_saga_real_absolute_then_gap_then_regular(monkeypatch):
     }
     monkeypatch.setattr(am, "_fetch_episodes_cached",
                         lambda _s, _a, _sl, path, _h: (data[path][0], data[path][1], "anime-sama.to"))
-    # Sonarr One Piece = une saison absolue : (1, e) -> épisode absolu e.
-    monkeypatch.setattr(am, "_absolute_episode",
+    # Le kai par-saga lit l'absolu de TheTVDB (pas de repli TMDB). Ici : (1, e) -> e.
+    monkeypatch.setattr(am, "tvdb_absolute_number",
                         lambda _s, _i, season, ep: ep if season == 1 else None)
     kai_map = {1: "kai/vostfr", 2: "kai2/vostfr"}
 
