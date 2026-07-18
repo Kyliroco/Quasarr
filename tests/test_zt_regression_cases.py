@@ -185,6 +185,35 @@ class TestZtRegressionCases:
         _CASES,
         ids=[c[0] for c in _CASES],
     )
+    def test_no_forbidden_tokens_in_titles(self, case_name, manifest, case_dir):
+        """Vérifie qu'aucun token interdit n'apparaît dans les titres générés.
+
+        Clé optionnelle `forbidden_title_tokens` du manifest. Cas d'usage :
+        l'année de production ZT d'une saison ≥ 2 (ex. 2014) injectée dans le
+        titre fait rejeter la release par Sonarr, dont la série est datée de
+        l'année de la saison 1 (ex. 2013).
+        """
+        forbidden = manifest.get("forbidden_title_tokens") or []
+        if not forbidden:
+            pytest.skip(f"Cas '{case_name}' : pas de forbidden_title_tokens")
+
+        releases, _ = _run_case(manifest, case_dir)
+        offenders = [
+            f"  {r['details']['title']} (contient {token!r})"
+            for r in releases
+            for token in forbidden
+            if token in r["details"]["title"]
+        ]
+        assert not offenders, (
+            f"Cas '{case_name}' : tokens interdits dans les titres :\n"
+            + "\n".join(offenders)
+        )
+
+    @pytest.mark.parametrize(
+        "case_name,manifest,case_dir",
+        _CASES,
+        ids=[c[0] for c in _CASES],
+    )
     def test_generates_at_least_one_release(self, case_name, manifest, case_dir):
         """Vérifie qu'au moins un release est généré (sinon le parsing est cassé)."""
         releases, _ = _run_case(manifest, case_dir)
