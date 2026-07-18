@@ -1012,6 +1012,13 @@ def _parse_results(shared_state,
             if not release_year:
                 release_year = detail_year
 
+            # Pour une série, ZT annonce l'année de production de la SAISON
+            # (ex. 2014 pour la saison 2 d'une série de 2013). Sonarr compare
+            # « Titre.Année » à l'année de début de la série et rejette tout
+            # écart : on n'injecte donc jamais d'année dans un titre de série.
+            if request_is_sonarr:
+                release_year = ""
+
             quality,language, detail_quality_tokens = _coerce_series_quality_tokens(
                 request_is_sonarr,
                 quality,
