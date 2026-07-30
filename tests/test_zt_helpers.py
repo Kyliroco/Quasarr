@@ -32,6 +32,7 @@ from quasarr.search.sources.zt import (
     _titles_equivalent,
     _tokenize_title,
     _extract_year_from_tokens,
+    _fetch_detail_metadata,
     _contains_year_token,
 )
 
@@ -685,3 +686,39 @@ class TestDetailPageExtraction:
         ss = MockSharedState()
         text = soup.get_text(" ", strip=True)
         assert _extract_size_mb(ss, text) == 2867  # ~2,8 Go → 2867 MB
+
+
+class TestFetchDetailMetadataArity:
+    """_fetch_detail_metadata doit toujours renvoyer le même nombre de valeurs.
+
+    Ses sorties d'erreur ont longtemps renvoyé 7 valeurs au lieu de 8, alors que
+    _parse_results en déballe 8. Le ValueError qui en résultait était avalé par
+    le `except Exception` de la boucle sur les cartes : chaque release dont la
+    page de détail échouait (timeout réseau) disparaissait silencieusement.
+    """
+
+    EXPECTED_FIELDS = 8
+
+    def test_empty_url_returns_full_tuple(self):
+        ss = MockSharedState()
+        result = _fetch_detail_metadata(ss, "", {"User-Agent": "test"}, "host")
+        assert len(result) == self.EXPECTED_FIELDS
+
+    def test_unreachable_detail_page_returns_full_tuple(self):
+        ss = MockSharedState()
+        # port 9 (discard) : connexion refusée immédiatement
+        result = _fetch_detail_metadata(
+            ss, "http://127.0.0.1:9/dead", {"User-Agent": "test"}, "host",
+        )
+        assert len(result) == self.EXPECTED_FIELDS
+
+    def test_error_tuple_unpacks_like_caller_does(self):
+        ss = MockSharedState()
+        result = _fetch_detail_metadata(
+            ss, "http://127.0.0.1:9/dead", {"User-Agent": "test"}, "host",
+        )
+        # Déballage identique à celui de _parse_results : ne doit pas lever.
+        (host, year, size_mb, title, quality_tokens,
+         episodes, entries, original_title) = result
+        assert host == "host"
+        assert entries == []

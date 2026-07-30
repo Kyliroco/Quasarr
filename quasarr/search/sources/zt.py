@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 from base64 import urlsafe_b64encode
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
 
 import requests
@@ -20,6 +21,13 @@ from quasarr.providers.log import info, debug, warning, error, log_event
 from quasarr.providers.shared_state import normalize_localized_season_episode_tags
 
 hostname = "zt"
+
+# Nombre de pages de détail récupérées en parallèle lors d'un feed.
+# Une page listing ZT contient ~25 cartes et Radarr en interroge deux catégories
+# ("films" + "autres-videos"), soit ~50 pages de détail par flux RSS. En
+# séquentiel cela dépasse le timeout de 100 s des clients *arr dès que la
+# latence atteint ~2 s par page.
+DETAIL_PREFETCH_WORKERS = 8
 
 SUPPORTED_MIRRORS = {
     "rapidgator",
@@ -440,6 +448,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             quality_tokens,
             available_episodes,
             download_entries,
+            original_title,
         )
 
     try:
@@ -455,6 +464,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             quality_tokens,
             available_episodes,
             download_entries,
+            original_title,
         )
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
@@ -853,6 +863,45 @@ def _parse_results(shared_state,
         requested_episode_num = int(episode) if episode is not None else None
     except (TypeError, ValueError):
         requested_episode_num = None
+
+    # Chemin "feed" (flux RSS de Radarr/Sonarr) : aucune carte n'est écartée en
+    # amont, chacune déclenchera donc un appel à sa page de détail. En séquentiel
+    # cela met le flux Radarr au-delà du timeout de 100 s dès que le site répond
+    # lentement, et Radarr désactive alors l'indexeur. On précharge en parallèle.
+    # (Sur le chemin recherche, seules quelques cartes survivent au filtre : on
+    # garde le chargement paresseux pour ne pas émettre de requêtes inutiles.)
+    if headers is not None and search_string is None:
+        detail_urls = []
+        for card in cards:
+            title_link = card.select_one("div.cover_infos_title a")
+            if not title_link or not title_link.get_text(strip=True):
+                continue
+            href = title_link.get("href", "").strip()
+            if not href:
+                continue
+            source = urljoin(base_url, href)
+            if source not in detail_urls:
+                detail_urls.append(source)
+
+        if detail_urls:
+            def _prefetch(url):
+                try:
+                    return url, _fetch_detail_metadata(
+                        shared_state, url, headers, current_host,
+                    )
+                except Exception as exc:  # ne jamais faire tomber tout le flux
+                    debug(f"{hostname.upper()} detail prefetch failed for {url}: {exc}")
+                    return url, None
+
+            workers = min(DETAIL_PREFETCH_WORKERS, len(detail_urls))
+            debug(
+                f"{hostname.upper()} prefetching {len(detail_urls)} detail pages "
+                f"with {workers} workers for {base_url}"
+            )
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for url, meta in pool.map(_prefetch, detail_urls):
+                    if meta is not None:
+                        metadata_cache[url] = meta
 
     for card in cards:
         try:

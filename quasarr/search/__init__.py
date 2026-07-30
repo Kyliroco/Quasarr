@@ -5,9 +5,10 @@
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from quasarr.providers.imdb_metadata import is_anime
-from quasarr.providers.log import info, debug, error
+from quasarr.providers.log import info, debug, warning, error
 from quasarr.search.sources.al import al_feed, al_search
 from quasarr.search.sources.am import am_feed, am_search
 from quasarr.search.sources.by import by_feed, by_search
@@ -21,6 +22,11 @@ from quasarr.search.sources.sf import sf_feed, sf_search
 from quasarr.search.sources.sl import sl_feed, sl_search
 from quasarr.search.sources.wd import wd_feed, wd_search
 from quasarr.search.sources.zt import zt_feed, zt_search
+
+# Radarr et Sonarr coupent une requête indexeur au bout de 100 s et marquent
+# l'indexeur en échec ; quelques échecs suffisent à le désactiver des heures.
+# On rend donc toujours la main avant, quitte à renvoyer un résultat partiel.
+SEARCH_BUDGET_SECONDS = 75
 
 
 def get_search_results(shared_state, request_from, imdb_id="", search_phrase="", mirror=None, season="", episode=""):
@@ -143,16 +149,33 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
 
     debug(f'Starting {len(functions)} search functions for {stype}... This may take some time.')
 
-    with ThreadPoolExecutor() as executor:
+    executor = ThreadPoolExecutor()
+    try:
         futures = [executor.submit(func) for func in functions]
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                results.extend(result)
-            except Exception as e:
-                tb = traceback.extract_tb(e.__traceback__)
-                location = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "unknown location"
-                error(f"An error occurred at {location}: {e}", source="search")
+        remaining = SEARCH_BUDGET_SECONDS - (time.time() - start_time)
+        try:
+            for future in as_completed(futures, timeout=max(remaining, 0)):
+                try:
+                    result = future.result()
+                    results.extend(result)
+                except Exception as e:
+                    tb = traceback.extract_tb(e.__traceback__)
+                    location = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "unknown location"
+                    error(f"An error occurred at {location}: {e}", source="search")
+        except FuturesTimeoutError:
+            # Budget épuisé : on répond avec ce qui est déjà arrivé plutôt que
+            # de laisser le client *arr expirer et désactiver l'indexeur.
+            unfinished = sum(1 for f in futures if not f.done())
+            warning(
+                f"Search budget of {SEARCH_BUDGET_SECONDS}s exhausted for {stype} - "
+                f"returning {len(results)} releases with {unfinished} source(s) still running",
+                source="search",
+            )
+    finally:
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # cancel_futures : Python < 3.9
+            executor.shutdown(wait=False)
 
     # Secours zt : si c'est un anime et qu'anime-sama n'a renvoyé aucun résultat,
     # on retombe sur zt (qui n'a pas été lancé dans le run parallèle ci-dessus).
