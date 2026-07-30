@@ -10,6 +10,7 @@ from quasarr.api.arr import setup_arr_routes
 from quasarr.api.captcha import setup_captcha_routes
 from quasarr.api.config import setup_config
 from quasarr.api.debug_dashboard import setup_debug_routes
+from quasarr.api.missing import setup_missing_routes
 from quasarr.api.sponsors_helper import setup_sponsors_helper_routes
 from quasarr.api.statistics import setup_statistics
 from quasarr.providers import shared_state
@@ -36,6 +37,7 @@ def get_api(shared_state_dict, shared_state_lock):
     setup_am_monitor(app, shared_state)
     setup_captcha_routes(app)
     setup_config(app, shared_state)
+    setup_missing_routes(app, shared_state)
     setup_statistics(app, shared_state)
     setup_sponsors_helper_routes(app)
     setup_debug_routes(app)
@@ -119,6 +121,9 @@ def get_api(shared_state_dict, shared_state_lock):
             <p><button class="btn-primary" onclick="location.href='/ytdlp'">yt-dlp Download Folder</button></p>
             <p><button class="btn-primary" onclick="location.href='/players'">anime-sama Players</button></p>
             <p><button class="btn-primary" onclick="location.href='/am-downloads'">anime-sama Downloads</button></p>
+            <p><button class="btn-primary" onclick="location.href='/missing/movies'">Films manquants jamais trouvés</button></p>
+            <p><button class="btn-primary" onclick="location.href='/missing/series'">Séries manquantes jamais trouvées</button></p>
+            <p><button class="btn-primary" onclick="location.href='/arr'">Connexion Radarr / Sonarr</button></p>
             <p><button class="btn-primary" onclick="location.href='/statistics'">View Statistics</button></p>
             <p><button class="btn-primary" onclick="location.href='/debug/'">Debug Dashboard</button></p>
         </div>

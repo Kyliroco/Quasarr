@@ -49,6 +49,17 @@ class Config(object):
         'FlareSolverr': [
             ("url", "str", ""),
         ],
+        # Accès en lecture seule à Radarr/Sonarr pour la page "manquants
+        # introuvables" : Quasarr y lit la liste des titres voulus et la
+        # blocklist. Aucune écriture n'est faite dans Radarr/Sonarr.
+        'Radarr': [
+            ("url", "str", ""),
+            ("api_key", "secret", ""),
+        ],
+        'Sonarr': [
+            ("url", "str", ""),
+            ("api_key", "secret", ""),
+        ],
         'AL': [
             ("user", "secret", ""),
             ("password", "secret", "")
