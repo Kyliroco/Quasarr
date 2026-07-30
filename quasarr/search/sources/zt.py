@@ -864,18 +864,42 @@ def _parse_results(shared_state,
     except (TypeError, ValueError):
         requested_episode_num = None
 
-    # Chemin "feed" (flux RSS de Radarr/Sonarr) : aucune carte n'est écartée en
-    # amont, chacune déclenchera donc un appel à sa page de détail. En séquentiel
-    # cela met le flux Radarr au-delà du timeout de 100 s dès que le site répond
-    # lentement, et Radarr désactive alors l'indexeur. On précharge en parallèle.
-    # (Sur le chemin recherche, seules quelques cartes survivent au filtre : on
-    # garde le chargement paresseux pour ne pas émettre de requêtes inutiles.)
-    if headers is not None and search_string is None:
+    # Chaque carte retenue déclenche un appel à sa page de détail. En séquentiel
+    # cela dépasse le timeout de 100 s des clients *arr dès que le site répond
+    # lentement (mesuré à ~3,5 s par page en production, soit ~180 s pour une
+    # recherche), et Radarr finit par désactiver l'indexeur. On les précharge
+    # donc en parallèle, aussi bien pour le flux RSS que pour la recherche.
+    #
+    # La passe ci-dessous rejoue les mêmes décisions que la boucle principale
+    # pour savoir *quelles* pages charger. Elle ne fait aucun réseau et la
+    # boucle reste seule juge : si elle est trop large on charge une page pour
+    # rien, si elle est trop stricte la boucle retombe sur le chargement
+    # paresseux. Dans les deux cas le résultat est identique.
+    if headers is not None:
         detail_urls = []
         for card in cards:
             title_link = card.select_one("div.cover_infos_title a")
-            if not title_link or not title_link.get_text(strip=True):
+            if not title_link:
                 continue
+            raw_title = title_link.get_text(strip=True)
+            if not raw_title:
+                continue
+
+            if search_string is not None:
+                valid, _ = shared_state.is_valid_release(
+                    raw_title, request_from, search_string, season, episode,
+                )
+                if not valid:
+                    # Sonarr : un titre valide au niveau saison peut nécessiter
+                    # la page de détail pour confirmer l'épisode.
+                    if not (request_is_sonarr and season is not None and episode is not None):
+                        continue
+                    season_only_valid, _ = shared_state.is_valid_release(
+                        raw_title, request_from, search_string, season, None,
+                    )
+                    if not season_only_valid:
+                        continue
+
             href = title_link.get("href", "").strip()
             if not href:
                 continue

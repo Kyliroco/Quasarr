@@ -628,6 +628,12 @@ def search_string_in_sanitized_title(search_string, title):
     search_tokens = sanitized_search_string.split()
     title_tokens = sanitized_title.split()
 
+    # Choix délibéré : un préfixe d'un seul mot (le nom de la franchise, ex.
+    # "Barbie" pour "Barbie : Rock et Royales") est accepté. Il fait remonter
+    # des releases d'un autre film de la franchise, mais Radarr les écarte de
+    # lui-même sur l'année, et cette tolérance évite de rater un film que le
+    # site liste sous un libellé raccourci. Seule la numérotation de suite
+    # ("Barbie 2" vs "Barbie") reste bloquante.
     if title_tokens and len(title_tokens) < len(search_tokens):
         prefix = search_tokens[:len(title_tokens)]
         if prefix == title_tokens:
