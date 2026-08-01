@@ -20,6 +20,7 @@ from quasarr.providers.arr_client import (
     get_missing_movies,
     get_missing_series,
     is_configured,
+    normalize_base_url,
     zt_search_url,
 )
 from quasarr.providers.html_templates import render_button, render_form, render_success
@@ -195,7 +196,8 @@ def setup_missing_routes(app, shared_state):
     @app.post('/api/arr')
     def arr_config_api():
         def _clean(name):
-            return (request.forms.get(name) or '').strip().rstrip('/')
+            # Normalise dès la saisie : schéma manquant, "/api" collé en trop...
+            return normalize_base_url(request.forms.get(name))
 
         Config('Radarr').save('url', _clean('radarr_url'))
         Config('Radarr').save('api_key', (request.forms.get('radarr_api_key') or '').strip())

@@ -6,6 +6,7 @@
 
 import html
 import re
+import threading
 import time
 import unicodedata
 from base64 import urlsafe_b64encode
@@ -28,6 +29,24 @@ hostname = "zt"
 # séquentiel cela dépasse le timeout de 100 s des clients *arr dès que la
 # latence atteint ~2 s par page.
 DETAIL_PREFETCH_WORKERS = 8
+
+# Une recherche lance jusqu'à 4 requêtes (titre localisé, sans accents, titre
+# original, sans accents) × 2 catégories, chacune paginée : ~29 pages de listing
+# en séquentiel pour un titre courant, soit ~100 s à 3,5 s/page. Ces flux sont
+# indépendants, on les mène de front.
+SEARCH_STREAM_WORKERS = 8
+
+# Plafond *global* de requêtes simultanées vers ZT. Les flux de recherche
+# préchargent eux-mêmes leurs pages de détail en parallèle : sans ce garde-fou
+# les deux niveaux se multiplieraient (8 × 8) et on martèlerait le site.
+ZT_MAX_CONCURRENT_REQUESTS = 8
+_zt_request_slots = threading.Semaphore(ZT_MAX_CONCURRENT_REQUESTS)
+
+
+def _zt_get(url, headers=None, timeout=10):
+    """GET vers ZT soumis au plafond de concurrence global."""
+    with _zt_request_slots:
+        return requests.get(url, headers=headers, timeout=timeout)
 
 SUPPORTED_MIRRORS = {
     "rapidgator",
@@ -452,7 +471,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         )
 
     try:
-        response = requests.get(source_url, headers=headers, timeout=10)
+        response = _zt_get(source_url, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as exc:
         debug(f"{hostname.upper()} failed to load detail page {source_url}: {exc}")
@@ -1442,7 +1461,7 @@ def zt_feed(shared_state, start_time, request_from, mirror=None):
         )
 
         try:
-            response = requests.get(url, headers=headers, timeout=10)
+            response = _zt_get(url, headers=headers, timeout=10)
             response.raise_for_status()
             zt = _update_hostname(shared_state, zt, response.url)
             soup = BeautifulSoup(response.text, "html.parser")
@@ -1502,101 +1521,122 @@ def zt_search(shared_state,
     seen_links = set()
     aggregated_releases = []
 
-    def perform_query(raw_query):
-        nonlocal zt
+    def run_stream(raw_query, category):
+        """Parcourt la pagination d'un couple (requête, catégorie).
 
-        # Skip a query with no searchable (Latin) content. The original title can
-        # be non-Latin (e.g. Japanese "アグレッシブ烈子") which would sanitize to an
-        # empty string: useless on Zone-Téléchargement and a source of false
-        # positives. Avoid the wasted, paginated requests entirely.
-        if not shared_state.sanitize_string(raw_query or ""):
-            debug(f"{hostname.upper()} skipping non-searchable query: {raw_query!r}")
-            return
-
+        Renvoie sa propre liste : aucun état n'est partagé entre flux, la
+        déduplication se fait à la fusion. La pagination reste séquentielle à
+        l'intérieur d'un flux (on ne sait qu'après analyse s'il faut la page
+        suivante), mais les flux, eux, sont indépendants.
+        """
+        collected = []
         # The Zone-Téléchargement search form limits inputs to 32 characters.
         # Apply the same limit *before* percent-encoding so multibyte characters
         # (e.g. "ê" → "%C3%A8") still count as a single character like in the UI.
-        limited_search = (raw_query or "")[:32]
-        q = quote_plus(limited_search)
+        q = quote_plus((raw_query or "")[:32])
+        current_host = zt
+        page = 1
+        found_any_release = False
+        diff_page = 3
 
-        for category in categories:
-            page = 1
-            found_any_release = False
+        while page < 10:
+            url = f"https://{current_host}/?p={category}&search={q}&page={page}"
+            headers = {"User-Agent": shared_state.values["user_agent"]}
 
-            while True and page<10:
-                url = f"https://{zt}/?p={category}&search={q}&page={page}"
-                headers = {"User-Agent": shared_state.values["user_agent"]}
+            debug(
+                f"{hostname.upper()} search request for '{raw_query}' "
+                f"(category={category}, page={page}, mirror={mirror}) using host '{current_host}'"
+            )
 
-                debug(
-                    f"{hostname.upper()} search request for '{raw_query}' "
-                    f"(category={category}, page={page}, mirror={mirror}) using host '{zt}'"
+            try:
+                response = _zt_get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                current_host = _update_hostname(shared_state, current_host, response.url)
+                soup = BeautifulSoup(response.text, "html.parser")
+                cards = soup.select("div.cover_global")
+                debug(f"{hostname.upper()} found {len(cards)} cards on page {page}", source="zt")
+                found = _parse_results(
+                    shared_state,
+                    soup,
+                    response.url,
+                    request_from,
+                    mirror,
+                    headers,
+                    current_host=current_host,
+                    search_string=raw_query,
+                    season=season,
+                    episode=episode,
+                    imdb_id=imdb_id,
                 )
+                collected.extend(found)
+                matched_on_page = len(found)
 
-                try:
-                    response = requests.get(url, headers=headers, timeout=10)
-                    response.raise_for_status()
-                    zt = _update_hostname(shared_state, zt, response.url)
-                    current_host = zt
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    cards = soup.select("div.cover_global")
-                    debug(f"{hostname.upper()} found {len(cards)} cards on page {page}", source="zt")
-                    found = _parse_results(
-                        shared_state,
-                        soup,
-                        response.url,
-                        request_from,
-                        mirror,
-                        headers,
-                        current_host=current_host,
-                        search_string=raw_query,
-                        season=season,
-                        episode=episode,
-                        imdb_id=imdb_id,
-                    )
-                    debug(f"found : {found}")
-                    matched_on_page = 0
-                    for release in found:
-                        link = release.get("details", {}).get("link")
-                        debug(f"link :{link}")
-                        if link:
-                            if link in seen_links:
-                                continue
-                            seen_links.add(link)
-                        aggregated_releases.append(release)
-                        matched_on_page += 1
+                if matched_on_page:
+                    found_any_release = True
+                    diff_page = 3
 
-                    if matched_on_page:
-                        found_any_release = True
-                        diff_page=3
+                if not cards:
+                    break
 
-                    if not cards:
+                if matched_on_page == 0 and found_any_release:
+                    if diff_page == 0:
                         break
+                    diff_page -= 1
 
-                    if matched_on_page == 0 and found_any_release:
-                        if diff_page == 0:
-                            break
-                        else:
-                            diff_page-= 1
+                page += 1
+            except Exception as exc:
+                message = f"Error loading {hostname.upper()} search: {exc}"
+                info(message)
+                raise RuntimeError(message) from exc
 
-                    page += 1
-                except Exception as exc:
-                    message = f"Error loading {hostname.upper()} search: {exc}"
-                    info(message)
-                    raise RuntimeError(message) from exc
+        return collected
+
+    def searchable(raw_query):
+        # Une requête sans contenu latin (titre original japonais
+        # "アグレッシブ烈子" → chaîne vide après nettoyage) est inutile sur
+        # Zone-Téléchargement et source de faux positifs : on évite les
+        # requêtes paginées gaspillées.
+        if not raw_query or not shared_state.sanitize_string(raw_query):
+            if raw_query:
+                debug(f"{hostname.upper()} skipping non-searchable query: {raw_query!r}")
+            return False
+        return True
 
     log_event("search_request", source="zt", level="INFO",
               query=search_string, requester=request_from,
               season=season, episode=episode, mirror=mirror)
 
-    perform_query(search_string)
+    queries = [search_string]
     accentless = _strip_diacritics(search_string)
     if accentless and accentless != search_string:
-        perform_query(accentless)
+        queries.append(accentless)
     if search_original and search_original != search_string:
-        perform_query(search_original)
+        queries.append(search_original)
         search_original_accentless = _strip_diacritics(search_original)
         if search_original_accentless and search_original_accentless != search_original:
-            perform_query(search_original_accentless)
+            queries.append(search_original_accentless)
+
+    streams = [(q, category) for q in queries if searchable(q) for category in categories]
+
+    if streams:
+        workers = min(SEARCH_STREAM_WORKERS, len(streams))
+        debug(
+            f"{hostname.upper()} running {len(streams)} search streams "
+            f"({len(queries)} queries x {len(categories)} categories) with {workers} workers"
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # pool.map conserve l'ordre : le résultat final reste celui de la
+            # version séquentielle, à déduplication identique.
+            stream_results = list(pool.map(lambda sc: run_stream(*sc), streams))
+
+        for collected in stream_results:
+            for release in collected:
+                link = release.get("details", {}).get("link")
+                if link:
+                    if link in seen_links:
+                        continue
+                    seen_links.add(link)
+                aggregated_releases.append(release)
     log_event("search_complete", source="zt", level="INFO",
               query=search_string, results_count=len(aggregated_releases),
               time_seconds=round(time.time() - start_time, 2))
