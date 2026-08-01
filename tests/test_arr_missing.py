@@ -124,3 +124,47 @@ class TestNotConfigured:
         with pytest.raises(arr_client.ArrError) as exc:
             arr_client._get('Radarr', 'movie')
         assert "pas configuré" in str(exc.value)
+
+
+class TestUrlNormalisation:
+    """Une URL saisie à la main doit rester utilisable par requests.
+
+    Sans schéma, requests lève "No connection adapters were found" — c'est ce
+    qui arrivait en tapant simplement "127.0.0.1:30025".
+    """
+
+    @pytest.mark.parametrize("saisi, attendu", [
+        # cas rencontré : hôte:port sans schéma
+        ("127.0.0.1:30025", "http://127.0.0.1:30025"),
+        ("192.168.1.30:7878", "http://192.168.1.30:7878"),
+        # schéma déjà présent : on n'y touche pas
+        ("http://192.168.1.30:7878", "http://192.168.1.30:7878"),
+        ("https://radarr.example.com", "https://radarr.example.com"),
+        # slash final et espaces
+        ("  http://radarr:7878/  ", "http://radarr:7878"),
+        # "/api" ou "/api/v3" collé en copiant depuis Radarr
+        ("http://radarr:7878/api", "http://radarr:7878"),
+        ("http://radarr:7878/api/v3", "http://radarr:7878"),
+        # vide reste vide (= non configuré)
+        ("", ""),
+        (None, ""),
+    ])
+    def test_normalisation(self, saisi, attendu):
+        assert arr_client.normalize_base_url(saisi) == attendu
+
+
+class TestReachabilityHint:
+    def test_localhost_gets_docker_hint(self):
+        hint = arr_client._reachability_hint("http://127.0.0.1:30025", Exception("refused"))
+        assert "conteneur Quasarr lui-même" in hint
+
+    def test_dns_failure_gets_resolution_hint(self):
+        hint = arr_client._reachability_hint(
+            "http://truenas.tailb140ce.ts.net:30025",
+            Exception("Failed to resolve 'x' ([Errno -2] Name does not resolve)"),
+        )
+        assert "ts.net" in hint
+
+    def test_plain_lan_failure_gets_no_noise(self):
+        hint = arr_client._reachability_hint("http://192.168.1.30:7878", Exception("timeout"))
+        assert hint == ""

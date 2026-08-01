@@ -14,7 +14,7 @@ Ce module ne fait que des requêtes GET : rien n'est modifié dans Radarr/Sonarr
 """
 
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import requests
 
@@ -30,10 +30,27 @@ class ArrError(Exception):
     """Radarr/Sonarr injoignable ou réponse inexploitable."""
 
 
+def normalize_base_url(url):
+    """Rend utilisable une URL saisie à la main.
+
+    Sans schéma, requests refuse l'URL ("No connection adapters were found"),
+    et on colle volontiers un "/api" ou "/api/v3" en copiant depuis Radarr.
+    """
+    url = (url or '').strip().rstrip('/')
+    if not url:
+        return ''
+    if '://' not in url:
+        url = f"http://{url}"
+    for suffix in ('/api/v3', '/api'):
+        if url.endswith(suffix):
+            url = url[:-len(suffix)]
+    return url.rstrip('/')
+
+
 def get_arr_config(kind):
     """Retourne (url, api_key) pour 'Radarr' ou 'Sonarr'; ('', '') si non configuré."""
     section = Config(kind)
-    url = (section.get('url') or '').strip().rstrip('/')
+    url = normalize_base_url(section.get('url'))
     api_key = (section.get('api_key') or '').strip()
     return url, api_key
 
@@ -41,6 +58,28 @@ def get_arr_config(kind):
 def is_configured(kind):
     url, api_key = get_arr_config(kind)
     return bool(url and api_key)
+
+
+def _reachability_hint(url, exc):
+    """Piste de résolution pour les deux pièges classiques en conteneur."""
+    message = str(exc).lower()
+    host = urlparse(url).hostname or ''
+
+    if host in ('127.0.0.1', 'localhost', '::1'):
+        return (" — Astuce : dans un conteneur Docker, 127.0.0.1 désigne le "
+                "conteneur Quasarr lui-même, pas la machine hôte. Utilisez "
+                "l'IP LAN de l'hôte (ex. http://192.168.1.30:PORT), ou "
+                "host.docker.internal, ou le nom du conteneur si Radarr/Sonarr "
+                "partage le même réseau Docker.")
+
+    if 'name does not resolve' in message or 'nameresolutionerror' in message \
+            or 'nodename nor servname' in message or 'getaddrinfo' in message:
+        return (f" — Astuce : le conteneur Quasarr ne sait pas résoudre "
+                f"'{host}'. Les noms MagicDNS Tailscale (*.ts.net) n'y sont pas "
+                f"résolus par défaut : utilisez une IP, ou déclarez le DNS "
+                f"Tailscale (100.100.100.100) dans le conteneur.")
+
+    return ""
 
 
 def _get(kind, path, params=None):
@@ -54,7 +93,7 @@ def _get(kind, path, params=None):
     try:
         response = requests.get(endpoint, params=query, timeout=REQUEST_TIMEOUT)
     except Exception as exc:
-        raise ArrError(f"{kind} injoignable sur {url} : {exc}") from exc
+        raise ArrError(f"{kind} injoignable sur {url} : {exc}{_reachability_hint(url, exc)}") from exc
 
     if response.status_code == 401:
         raise ArrError(f"{kind} a refusé la clé API (401).")
