@@ -451,6 +451,7 @@ def _extract_original_title(soup):
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
     production_year = ""
+    filename_year = ""
     size_mb = 0
     detail_title = None
     original_title = None
@@ -468,6 +469,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             available_episodes,
             download_entries,
             original_title,
+            filename_year,
         )
 
     try:
@@ -484,6 +486,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             available_episodes,
             download_entries,
             original_title,
+            filename_year,
         )
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
@@ -493,8 +496,18 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         text = detail_soup.get_text(" ", strip=True)
         title = _extract_detail_title(detail_soup)
         original_title = _extract_original_title(detail_soup)
+        # Le site annonce deux années : le champ de fiche « Année de production »
+        # et celle lue dans le nom de fichier surligné, saisi par l'uploadeur.
+        # Aucune des deux n'est fiable à tous les coups (mesuré sur 12 films :
+        # 11/12 pour la fiche, 8/12 pour le nom de fichier). Plutôt que de parier
+        # sur l'une, on les remonte toutes les deux et on laissera Radarr trancher.
+        #
+        # L'année reste celle du site, jamais celle de TMDB : c'est elle qui
+        # distingue deux homonymes, la réécrire ferait importer un autre film
+        # sans aucune alerte.
         highlighted_year = _extract_year_from_highlight(detail_soup)
-        production_year = highlighted_year or _extract_production_year(text)
+        production_year = _extract_production_year(text) or highlighted_year
+        filename_year = highlighted_year
         size_mb = _extract_size_mb(shared_state, text) or 0
         quality_tokens = _extract_quality_language_tokens(detail_soup)
         download_entries = _collect_download_entries(detail_soup, response.url)
@@ -541,6 +554,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         available_episodes,
         download_entries,
         original_title,
+        filename_year,
     )
 
 
@@ -568,7 +582,13 @@ def _normalize_title(title):
     normalized = normalize_localized_season_episode_tags(title)
     normalized = _strip_diacritics(normalized)
     normalized = re.sub(r"[:：]", " ", normalized)
-    normalized = re.sub(r"[’']", "", normalized)
+    # Séparateur, surtout pas suppression : coller les deux moitiés d'une
+    # élision empêche Radarr de retrouver le film. Il normalise un titre en
+    # retirant les articles isolés, donc "Y'a pas de réseau" devient chez lui
+    # "ypasdereseau" (le "a" saute). En produisant "Ya.pas.de.reseau" on lui
+    # donnait "yapasdereseau" — jamais égal, d'où « Unknown Movie ». Avec un
+    # séparateur, "Y.a.pas.de.reseau" se normalise à l'identique.
+    normalized = re.sub(r"[’']", " ", normalized)
     normalized = normalized.replace(",", " ")
     normalized = normalized.replace(" - ", "-")
     normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -1023,6 +1043,7 @@ def _parse_results(shared_state,
             listing_title = title
             detail_available_episodes = set()
             detail_download_entries = []
+            detail_filename_year = ""
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -1041,6 +1062,7 @@ def _parse_results(shared_state,
                     detail_available_episodes,
                     detail_download_entries,
                     detail_original_title,
+                    detail_filename_year,
                 ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
@@ -1097,6 +1119,10 @@ def _parse_results(shared_state,
             mb = detail_size_mb or 0
             release_imdb_id = imdb_id
 
+            # L'année vient du site, et uniquement du site : c'est elle qui
+            # distingue deux films homonymes. La remplacer par celle de TMDB
+            # ferait passer un homonyme pour le film cherché, que Radarr
+            # importerait sans rien signaler.
             listing_tokens = _tokenize_title(listing_title)
             release_year = _extract_year_from_tokens(listing_tokens)
             if not release_year and quality:
@@ -1104,12 +1130,22 @@ def _parse_results(shared_state,
             if not release_year:
                 release_year = detail_year
 
+            # Le site annonce parfois deux années différentes (fiche contre nom
+            # de fichier). Ni l'une ni l'autre n'est fiable à tous les coups :
+            # plutôt que de parier, on émet la release dans les deux millésimes
+            # et Radarr retient celui qui correspond à sa fiche — l'autre est
+            # simplement ignoré en « Unknown Movie », sans effet de bord.
+            alternate_year = ""
+            if detail_filename_year and str(detail_filename_year) != str(release_year):
+                alternate_year = str(detail_filename_year)
+
             # Pour une série, ZT annonce l'année de production de la SAISON
             # (ex. 2014 pour la saison 2 d'une série de 2013). Sonarr compare
             # « Titre.Année » à l'année de début de la série et rejette tout
             # écart : on n'injecte donc jamais d'année dans un titre de série.
             if request_is_sonarr:
                 release_year = ""
+                alternate_year = ""  # aucune année dans un titre de série
 
             quality,language, detail_quality_tokens = _coerce_series_quality_tokens(
                 request_is_sonarr,
@@ -1136,6 +1172,19 @@ def _parse_results(shared_state,
                 final_title_base = _ensure_episode_tag(
                     final_title_base, requested_season_num, requested_episode_num
                 )
+
+            # Même release, dans l'autre millésime annoncé par le site.
+            alternate_year_title_base = None
+            if alternate_year:
+                alternate_year_title_base = _build_final_title(
+                    title_source,
+                    listing_title,
+                    alternate_year,
+                    detail_quality_tokens,
+                    quality,
+                )
+                if _titles_equivalent(alternate_year_title_base, final_title_base):
+                    alternate_year_title_base = None
 
             stripped_title_source = _strip_parenthetical_content(title_source)
             stripped_final_title_base = None
@@ -1305,6 +1354,54 @@ def _parse_results(shared_state,
 
 
                 added_entry = True
+
+                # Doublon dans l'autre millésime annoncé par le site : Radarr
+                # gardera celui qui correspond à sa fiche et ignorera l'autre.
+                if alternate_year_title_base:
+                    alt_with_episode = alternate_year_title_base
+                    if entry_episode_for_title is not None:
+                        alt_with_episode = _ensure_episode_tag(
+                            alt_with_episode,
+                            base_season_number,
+                            entry_episode_for_title,
+                        )
+                    alt_for_host = (
+                        f"{alt_with_episode}.{language}" if language else alt_with_episode
+                    )
+                    alt_entry_title = _append_host_to_title(alt_for_host, entry_host)
+                    if alt_entry_title and not _titles_equivalent(alt_entry_title, entry_final_title):
+                        alt_payload_str = (
+                            f"{alt_entry_title}.{language}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}"
+                            if language else
+                            f"{alt_entry_title}|{entry_payload_source}|{entry_mirror}|{mb}|{release_imdb_id}"
+                        )
+                        alt_payload = urlsafe_b64encode(
+                            alt_payload_str.encode("utf-8")
+                        ).decode("utf-8")
+                        alt_link = (
+                            f"{shared_state.values['internal_address']}/download/?payload={alt_payload}"
+                        )
+                        log_event("release_accepted", source="zt",
+                                  title=alt_entry_title,
+                                  host=entry_host,
+                                  size_mb=mb,
+                                  imdb_id=release_imdb_id,
+                                  reason="millesime alternatif annonce par le site",
+                                  source_url=entry_payload_source)
+                        releases.append({
+                            "details": {
+                                "title": alt_entry_title,
+                                "hostname": hostname,
+                                "imdb_id": release_imdb_id,
+                                "link": alt_link,
+                                "mirror": entry_mirror,
+                                "size": size_bytes,
+                                "date": release_date,
+                                "source": entry_payload_source,
+                            },
+                            "type": "protected",
+                        })
+
                 if original_title_base:
                     original_title_with_episode = original_title_base
                     if entry_episode_for_title is not None:

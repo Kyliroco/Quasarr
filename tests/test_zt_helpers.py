@@ -432,7 +432,11 @@ class TestNormalizeTitle:
         ("Inception", "Inception"),
         ("The Dark Knight", "The.Dark.Knight"),
         ("Film : Le Retour", "Film.Le.Retour"),
-        ("L'aventure", "Laventure"),
+        # L'apostrophe devient un séparateur et ne colle plus les deux moitiés
+        # de l'élision : Radarr ne retrouvait plus le film sinon.
+        # cf. tests/test_radarr_title_matching.py
+        ("L'aventure", "L.aventure"),
+        ("Y'a pas de réseau", "Y.a.pas.de.reseau"),
         ("Saison 1 Episode 3", "S01E03"),
         ("Film  Multiple   Spaces", "Film.Multiple.Spaces"),
         ("", ""),
@@ -691,13 +695,13 @@ class TestDetailPageExtraction:
 class TestFetchDetailMetadataArity:
     """_fetch_detail_metadata doit toujours renvoyer le même nombre de valeurs.
 
-    Ses sorties d'erreur ont longtemps renvoyé 7 valeurs au lieu de 8, alors que
-    _parse_results en déballe 8. Le ValueError qui en résultait était avalé par
+    Ses sorties d'erreur ont longtemps renvoyé 7 valeurs au lieu du compte
+    attendu, alors que _parse_results les déballe toutes. Le ValueError qui en résultait était avalé par
     le `except Exception` de la boucle sur les cartes : chaque release dont la
     page de détail échouait (timeout réseau) disparaissait silencieusement.
     """
 
-    EXPECTED_FIELDS = 8
+    EXPECTED_FIELDS = 9
 
     def test_empty_url_returns_full_tuple(self):
         ss = MockSharedState()
@@ -719,6 +723,6 @@ class TestFetchDetailMetadataArity:
         )
         # Déballage identique à celui de _parse_results : ne doit pas lever.
         (host, year, size_mb, title, quality_tokens,
-         episodes, entries, original_title) = result
+         episodes, entries, original_title, filename_year) = result
         assert host == "host"
         assert entries == []
