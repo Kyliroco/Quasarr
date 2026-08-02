@@ -602,6 +602,27 @@ def sanitize_string(s):
     return s
 
 
+def has_non_latin_letters(text):
+    """Vrai si le texte contient des lettres hors alphabet latin (CJK, cyrillique…).
+
+    sanitize_string() les supprime purement et simplement. Quand elles portaient
+    toute la spécificité du titre, ce qui reste n'est plus le film mais sa
+    franchise : "ONE PIECE 呪われた聖剣" se réduit à "one piece", qui matche alors
+    l'intégralité du catalogue One Piece. Le cas dégénéré (titre entièrement
+    non-latin → chaîne vide) était déjà écarté ; celui-ci est plus sournois car
+    il produit une requête d'apparence valide.
+
+    Les accents latins ne comptent pas : "Malédiction" reste du latin.
+    """
+    normalized = unicodedata.normalize("NFD", text or "")
+    for char in normalized:
+        if unicodedata.category(char) == 'Mn':
+            continue  # marque d'accent détachée d'une lettre latine
+        if char.isalpha() and not ('a' <= char.lower() <= 'z'):
+            return True
+    return False
+
+
 def search_string_in_sanitized_title(search_string, title):
     sanitized_search_string = sanitize_string(search_string)
     sanitized_title = sanitize_string(title)

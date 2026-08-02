@@ -1600,6 +1600,19 @@ def zt_search(shared_state,
             if raw_query:
                 debug(f"{hostname.upper()} skipping non-searchable query: {raw_query!r}")
             return False
+
+        # Même logique, cas plus sournois : le titre est *partiellement* non
+        # latin ("ONE PIECE 呪われた聖剣"). Le nettoyage ne laisse que "one
+        # piece", qui matche tout le catalogue de la franchise — 296 releases
+        # et 143 s de recherche observés en production, donc timeout Radarr et
+        # indexeur désactivé. Le titre localisé, lui, reste discriminant.
+        if shared_state.has_non_latin_letters(raw_query):
+            debug(
+                f"{hostname.upper()} skipping query with non-Latin content "
+                f"(would degrade to a franchise-wide match): {raw_query!r}"
+            )
+            return False
+
         return True
 
     log_event("search_request", source="zt", level="INFO",
