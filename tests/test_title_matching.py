@@ -17,7 +17,11 @@ pas contourné.
 
 import pytest
 
-from quasarr.providers.shared_state import search_string_in_sanitized_title as matches
+from quasarr.providers.shared_state import (
+    has_non_latin_letters,
+    sanitize_string,
+    search_string_in_sanitized_title as matches,
+)
 
 
 class TestFranchisePrefixIsDeliberatelyAccepted:
@@ -71,3 +75,43 @@ class TestEmptySearchGuard:
     def test_empty_sanitized_search_matches_nothing(self):
         # un titre entièrement non-ASCII se réduit à vide après nettoyage
         assert matches("進撃の巨人", "N'importe quel titre") is False
+
+
+class TestNonLatinQueryDetection:
+    """Un titre partiellement non latin perd sa spécificité au nettoyage.
+
+    Cas réel : le titre original TMDB de « One Piece, film 5 » est
+    "ONE PIECE 呪われた聖剣". sanitize_string() retire les caractères japonais et
+    laisse "one piece" — qui matche tout le catalogue de la franchise. Résultat
+    observé en production : 296 releases, 143 s de recherche, timeout Radarr et
+    indexeur désactivé.
+    """
+
+    @pytest.mark.parametrize("titre", [
+        "ONE PIECE 呵われた聖剣",   # japonais partiel
+        "進撃の巨人",                    # japonais intégral
+        "Война и мир",  # cyrillique
+    ])
+    def test_non_latin_is_detected(self, titre):
+        assert has_non_latin_letters(titre) is True
+
+    @pytest.mark.parametrize("titre", [
+        "One Piece, film 5 : La Malédiction de l'épée sacrée",  # accents = latin
+        "Tempête de boulettes géantes",
+        "Barbie in Rock 'N Royals",
+        "Naruto Shippuden",
+        "",
+        None,
+    ])
+    def test_latin_is_not_flagged(self, titre):
+        assert has_non_latin_letters(titre) is False
+
+    def test_degradation_is_what_makes_it_dangerous(self):
+        """Illustre pourquoi le garde-fou « chaîne vide » ne suffisait pas."""
+        japonais_partiel = "ONE PIECE 呵われた聖剣"
+        # le nettoyage ne vide pas la requête : il la rend générique
+        assert sanitize_string(japonais_partiel) == "one piece"
+        # et cette requête générique matche alors n'importe quel One Piece
+        assert matches(japonais_partiel, "One Piece Film Z") is True
+        # d'où la nécessité de la détecter en amont
+        assert has_non_latin_letters(japonais_partiel) is True

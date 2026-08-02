@@ -149,12 +149,15 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
 
     debug(f'Starting {len(functions)} search functions for {stype}... This may take some time.')
 
+    def remaining_budget():
+        return max(SEARCH_BUDGET_SECONDS - (time.time() - start_time), 0)
+
     executor = ThreadPoolExecutor()
     try:
         futures = [executor.submit(func) for func in functions]
-        remaining = SEARCH_BUDGET_SECONDS - (time.time() - start_time)
+        remaining = remaining_budget()
         try:
-            for future in as_completed(futures, timeout=max(remaining, 0)):
+            for future in as_completed(futures, timeout=remaining):
                 try:
                     result = future.result()
                     results.extend(result)
@@ -179,17 +182,43 @@ def get_search_results(shared_state, request_from, imdb_id="", search_phrase="",
 
     # Secours zt : si c'est un anime et qu'anime-sama n'a renvoyé aucun résultat,
     # on retombe sur zt (qui n'a pas été lancé dans le run parallèle ci-dessus).
+    # Ce secours doit rester soumis au même budget : lancé en synchrone il
+    # échappait au garde-fou, et une recherche zt de 143 s a ainsi dépassé le
+    # timeout de 100 s de Radarr, qui a désactivé l'indexeur.
     if imdb_id and anime and zt:
         am_found = any(r.get("details", {}).get("hostname") == "am" for r in results)
         if not am_found:
-            debug("anime-sama returned no results — falling back to zt", source="search")
-            try:
-                results.extend(zt_search(
-                    shared_state, start_time, request_from, imdb_id,
-                    mirror=mirror, season=season, episode=episode,
-                ))
-            except Exception as e:
-                error(f"zt fallback failed: {e}", source="search")
+            remaining = remaining_budget()
+            if not remaining:
+                warning(
+                    f"Search budget of {SEARCH_BUDGET_SECONDS}s already exhausted for {stype} - "
+                    f"skipping zt fallback",
+                    source="search",
+                )
+            else:
+                debug("anime-sama returned no results — falling back to zt", source="search")
+                fallback_executor = ThreadPoolExecutor(max_workers=1)
+                try:
+                    future = fallback_executor.submit(
+                        zt_search,
+                        shared_state, start_time, request_from, imdb_id,
+                        mirror=mirror, season=season, episode=episode,
+                    )
+                    try:
+                        results.extend(future.result(timeout=remaining))
+                    except FuturesTimeoutError:
+                        warning(
+                            f"Search budget of {SEARCH_BUDGET_SECONDS}s exhausted during zt "
+                            f"fallback for {stype} - returning {len(results)} releases",
+                            source="search",
+                        )
+                    except Exception as e:
+                        error(f"zt fallback failed: {e}", source="search")
+                finally:
+                    try:
+                        fallback_executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:  # cancel_futures : Python < 3.9
+                        fallback_executor.shutdown(wait=False)
 
     elapsed_time = time.time() - start_time
     info(f"Providing {len(results)} releases to {request_from} for {stype}. Time taken: {elapsed_time:.2f} seconds")

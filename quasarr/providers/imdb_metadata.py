@@ -224,13 +224,24 @@ def get_type(shared_state, imdb_id, language='fr'):
 
 
 def is_anime(shared_state, imdb_id):
-    """True si TMDB classe le titre comme animation d'origine japonaise.
+    """True si TMDB classe le titre comme *série* d'animation japonaise.
 
     Sert à router la recherche : un anime passe par anime-sama, un dessin animé
     occidental (Pixar, etc.) ou tout autre contenu reste sur zt.
+
+    Les **films** en sont exclus, même japonais et même animés : anime-sama
+    diffuse des épisodes de séries. Mesuré sur quatre films (One Piece 5, Film
+    Red, Film Z, Naruto Princesse des neiges) : 0 résultat à chaque fois, pour
+    9 à 18 s dépensées — et ce temps s'ajoutait *avant* le repli sur zt, qui
+    n'était lancé qu'ensuite.
     """
-    result, _media_type = _tmdb_find(imdb_id)
+    result, media_type = _tmdb_find(imdb_id)
     if not result:
+        return False
+
+    if media_type != 'tv':
+        debug(f"is_anime({imdb_id}) -> False (media_type={media_type!r}, "
+              f"anime-sama ne sert que des séries)", source="tmdb")
         return False
 
     if 16 not in result.get('genre_ids', []):  # 16 = Animation
