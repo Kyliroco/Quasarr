@@ -115,3 +115,97 @@ class TestNonLatinQueryDetection:
         assert matches(japonais_partiel, "One Piece Film Z") is True
         # d'où la nécessité de la détecter en amont
         assert has_non_latin_letters(japonais_partiel) is True
+
+
+class TestLinkingWordInsertedByTmdb:
+    """TMDB insère parfois un mot de liaison absent du libellé du site.
+
+    Cas réel : Radarr veut « Barbie dans cœur de princesse » (TMDB) alors que
+    Zone-Téléchargement liste « Barbie coeur de princesse ». Le « dans » en trop
+    n'est pas en fin de chaîne, donc le repli par préfixe ne le rattrapait pas
+    et le film restait introuvable.
+    """
+
+    @pytest.mark.parametrize("search, zt_title", [
+        ("Barbie dans cœur de princesse", "Barbie coeur de princesse"),
+        ("Barbie dans Casse-noisette", "Barbie Casse-noisette"),
+        ("Le Voyage de Chihiro", "Voyage Chihiro"),
+    ])
+    def test_accepted(self, search, zt_title):
+        assert matches(search, zt_title) is True
+
+    @pytest.mark.parametrize("search, zt_title", [
+        # l'ordre compte : ce n'est pas une simple inclusion de mots
+        ("Barbie dans cœur de princesse", "Barbie princesse coeur"),
+        # un mot absent de la recherche suffit à rejeter
+        ("Barbie dans cœur de princesse", "Barbie au bal des princesses"),
+        ("Barbie dans cœur de princesse", "Barbie et le Palais de Diamant"),
+    ])
+    def test_rejected(self, search, zt_title):
+        assert matches(search, zt_title) is False
+
+    def test_sequel_numbering_still_blocks(self):
+        # le garde-fou d'origine reste prioritaire sur ce repli
+        assert matches("Shrek 2", "Shrek") is False
+
+
+class TestFrenchLigatures:
+    """œ et æ doivent être transcrites, pas supprimées.
+
+    NFD ne les décompose pas : elles arrivaient intactes jusqu'au filtre ASCII
+    qui les effaçait. "cœur" devenait "cur", qui ne correspond plus au "coeur"
+    écrit par le site. Bug d'autant plus gênant sur un fork français.
+    """
+
+    @pytest.mark.parametrize("mot, attendu", [
+        ("cœur", "coeur"),
+        ("sœur", "soeur"),
+        ("œuvre", "oeuvre"),
+        ("vœux", "voeux"),
+        ("nævus", "naevus"),
+        ("CŒUR", "coeur"),
+    ])
+    def test_ligature_is_transcribed(self, mot, attendu):
+        assert sanitize_string(mot) == attendu
+
+    @pytest.mark.parametrize("search, zt_title", [
+        ("Barbie dans cœur de princesse", "Barbie coeur de princesse"),
+        ("Naruto, le Génie Et Les Trois Vœux", "Naruto le Genie et les Trois Voeux"),
+    ])
+    def test_titles_with_ligatures_match_their_ascii_spelling(self, search, zt_title):
+        assert matches(search, zt_title) is True
+
+
+class TestLigaturesAreNotMistakenForForeignScript:
+    """Régression : le garde-fou « non latin » écartait les titres français.
+
+    has_non_latin_letters() rejetait "cœur" parce que NFD ne décompose pas la
+    ligature. Conséquence : la requête entière était abandonnée avant même
+    d'interroger le site, et le film restait introuvable. Les deux fonctions
+    partagent désormais la même table de transcription.
+    """
+
+    @pytest.mark.parametrize("titre", [
+        "Barbie dans cœur de princesse",
+        "Naruto, le Génie Et Les Trois Vœux",
+        "Le Cœur des hommes",
+        "Sœurs d'armes",
+        "Nævus",
+    ])
+    def test_french_ligature_is_latin(self, titre):
+        assert has_non_latin_letters(titre) is False
+
+    @pytest.mark.parametrize("titre", [
+        "ONE PIECE 呵われた聖剣",
+        "進撃の巨人",
+    ])
+    def test_real_foreign_script_still_detected(self, titre):
+        assert has_non_latin_letters(titre) is True
+
+    def test_transcription_matches_sanitize_string(self):
+        """Les deux fonctions doivent s'accorder, sinon on écarte à tort."""
+        for titre in ["cœur", "sœur", "nævus", "Straße"]:
+            assert has_non_latin_letters(titre) is False
+            # sanitize_string conserve bien le mot au lieu de l'amputer
+            assert sanitize_string(titre) != ""
+            assert len(sanitize_string(titre)) >= len(titre) - 1

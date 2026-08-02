@@ -541,6 +541,21 @@ _ROMAN_NUMERAL_MAP = {
 }
 
 
+# Lettres latines sans décomposition canonique en NFD : il faut les transcrire
+# à la main, sinon elles disparaissent au filtre ASCII de sanitize_string() et
+# ne sont pas reconnues comme latines par has_non_latin_letters().
+_LATIN_NON_DECOMPOSING = {
+    'œ': 'oe',
+    'æ': 'ae',
+    'ø': 'o',
+    'ß': 'ss',
+    'đ': 'd',
+    'ð': 'd',
+    'ł': 'l',
+    'þ': 'th',
+}
+
+
 def sanitize_string(s):
     s = s.lower()
 
@@ -562,6 +577,12 @@ def sanitize_string(s):
     s = re.sub(r'ö', 'oe', s)
     s = re.sub(r'ü', 'ue', s)
     s = re.sub(r'ß', 'ss', s)
+
+    # Lettres latines que NFD ne décompose pas : sans transcription explicite
+    # elles tombaient dans le filtre ASCII qui les *supprimait* ("cœur" ->
+    # "cur", qui ne correspond plus au "coeur" écrit par le site).
+    for source, replacement in _LATIN_NON_DECOMPOSING.items():
+        s = s.replace(source, replacement)
 
     # Remove special characters
     s = re.sub(r'[^a-zA-Z0-9\s]', '', s)
@@ -612,15 +633,33 @@ def has_non_latin_letters(text):
     non-latin → chaîne vide) était déjà écarté ; celui-ci est plus sournois car
     il produit une requête d'apparence valide.
 
-    Les accents latins ne comptent pas : "Malédiction" reste du latin.
+    Les accents latins ne comptent pas : "Malédiction" reste du latin. Les
+    ligatures non plus — "cœur" est du français, pas du japonais. Elles sont
+    transcrites d'abord, exactement comme le fait sanitize_string() : sans ça,
+    toute recherche contenant un œ était écartée à tort.
     """
-    normalized = unicodedata.normalize("NFD", text or "")
+    lowered = (text or "").lower()
+    for source, replacement in _LATIN_NON_DECOMPOSING.items():
+        lowered = lowered.replace(source, replacement)
+
+    normalized = unicodedata.normalize("NFD", lowered)
     for char in normalized:
         if unicodedata.category(char) == 'Mn':
             continue  # marque d'accent détachée d'une lettre latine
-        if char.isalpha() and not ('a' <= char.lower() <= 'z'):
+        if char.isalpha() and not ('a' <= char <= 'z'):
             return True
     return False
+
+
+def _tokens_in_order(needle_tokens, haystack_tokens):
+    """Vrai si needle_tokens apparaît comme sous-suite ordonnée de haystack.
+
+    Exiger l'ordre plutôt qu'une simple inclusion garde le critère
+    discriminant : "barbie cœur de princesse" passe dans "barbie dans cœur de
+    princesse", mais "barbie au bal des princesses" non.
+    """
+    iterator = iter(haystack_tokens)
+    return all(token in iterator for token in needle_tokens)
 
 
 def search_string_in_sanitized_title(search_string, title):
@@ -670,6 +709,23 @@ def search_string_in_sanitized_title(search_string, title):
                     f"Allowing sanitized prefix match for {sanitized_title} within {sanitized_search_string}"
                 )
                 return True
+
+    # Dernier repli : tous les mots du titre du site figurent, dans l'ordre,
+    # dans la recherche. TMDB insère parfois un mot de liaison que le site
+    # n'utilise pas — "Barbie dans cœur de princesse" (TMDB) contre "Barbie
+    # cœur de princesse" (ZT) — et le préfixe strict ci-dessus ne le rattrape
+    # pas, le mot en trop n'étant pas en fin de chaîne.
+    if title_tokens and _tokens_in_order(title_tokens, search_tokens):
+        extra_tokens = [t for t in search_tokens if t not in title_tokens]
+        numeric_like = {
+            token for token in extra_tokens
+            if token.isdigit() or token in _ROMAN_NUMERAL_MAP
+        }
+        if not numeric_like:
+            debug(
+                f"Allowing in-order token match for {sanitized_title} within {sanitized_search_string}"
+            )
+            return True
 
     debug(f"Skipping {sanitized_title} as it doesn't match search string: {sanitized_search_string}")
     return False
