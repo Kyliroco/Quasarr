@@ -16,10 +16,17 @@ from urllib.parse import parse_qs, quote_plus, urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup, NavigableString
 
-from quasarr.providers.imdb_metadata import get_localized_title, get_type
+from quasarr.providers.imdb_metadata import (
+    get_french_alternative_titles,
+    get_localized_title,
+    get_type,
+)
 from quasarr.providers.log import info, debug, warning, error, log_event
 
-from quasarr.providers.shared_state import normalize_localized_season_episode_tags
+from quasarr.providers.shared_state import (
+    normalize_localized_season_episode_tags,
+    strip_site_film_ordinal,
+)
 
 hostname = "zt"
 
@@ -1173,18 +1180,36 @@ def _parse_results(shared_state,
                     final_title_base, requested_season_num, requested_episode_num
                 )
 
-            # Même release, dans l'autre millésime annoncé par le site.
-            alternate_year_title_base = None
-            if alternate_year:
-                alternate_year_title_base = _build_final_title(
-                    title_source,
+            # Graphies supplémentaires de la même release. Le site nomme les
+            # films autrement que la fiche du film chez Radarr — autre millésime,
+            # numéro d'ordre intercalé — et Radarr rapproche sur le couple
+            # (titre nettoyé, année) : un seul écart et c'est « Unknown Movie ».
+            # Plutôt que de parier, on propose chaque graphie plausible ; Radarr
+            # retient celle qui correspond et ignore les autres.
+            alternate_title_bases = []
+
+            def _ajouter_variante(source, annee):
+                base = _build_final_title(
+                    source,
                     listing_title,
-                    alternate_year,
+                    annee,
                     detail_quality_tokens,
                     quality,
                 )
-                if _titles_equivalent(alternate_year_title_base, final_title_base):
-                    alternate_year_title_base = None
+                if not base or _titles_equivalent(base, final_title_base):
+                    return
+                if any(_titles_equivalent(base, other) for other in alternate_title_bases):
+                    return
+                alternate_title_bases.append(base)
+
+            sans_numero = strip_site_film_ordinal(title_source)
+
+            if alternate_year:
+                _ajouter_variante(title_source, alternate_year)
+            if sans_numero:
+                _ajouter_variante(sans_numero, release_year)
+                if alternate_year:
+                    _ajouter_variante(sans_numero, alternate_year)
 
             stripped_title_source = _strip_parenthetical_content(title_source)
             stripped_final_title_base = None
@@ -1355,10 +1380,11 @@ def _parse_results(shared_state,
 
                 added_entry = True
 
-                # Doublon dans l'autre millésime annoncé par le site : Radarr
-                # gardera celui qui correspond à sa fiche et ignorera l'autre.
-                if alternate_year_title_base:
-                    alt_with_episode = alternate_year_title_base
+                # Mêmes fichiers, sous les autres graphies annoncées par le
+                # site : Radarr garde celle qui correspond à sa fiche et ignore
+                # les autres.
+                for alternate_title_base in alternate_title_bases:
+                    alt_with_episode = alternate_title_base
                     if entry_episode_for_title is not None:
                         alt_with_episode = _ensure_episode_tag(
                             alt_with_episode,
@@ -1386,7 +1412,7 @@ def _parse_results(shared_state,
                                   host=entry_host,
                                   size_mb=mb,
                                   imdb_id=release_imdb_id,
-                                  reason="millesime alternatif annonce par le site",
+                                  reason="graphie alternative annoncee par le site",
                                   source_url=entry_payload_source)
                         releases.append({
                             "details": {
@@ -1725,6 +1751,15 @@ def zt_search(shared_state,
         search_original_accentless = _strip_diacritics(search_original)
         if search_original_accentless and search_original_accentless != search_original:
             queries.append(search_original_accentless)
+
+    # Autres intitulés français connus de TMDB. Le site nomme parfois un film
+    # comme l'une de ces variantes plutôt que comme le titre principal, et
+    # Radarr les reconnaît lui aussi : chercher avec elles évite d'avoir à
+    # relâcher la comparaison des titres.
+    if imdb_id:
+        for alternative in get_french_alternative_titles(shared_state, imdb_id):
+            if not any(_titles_equivalent(alternative, known) for known in queries):
+                queries.append(alternative)
 
     streams = [(q, category) for q in queries if searchable(q) for category in categories]
 

@@ -19,6 +19,7 @@ import pytest
 
 from quasarr.providers.shared_state import (
     has_non_latin_letters,
+    strip_site_film_ordinal,
     sanitize_string,
     search_string_in_sanitized_title as matches,
 )
@@ -209,3 +210,68 @@ class TestLigaturesAreNotMistakenForForeignScript:
             # sanitize_string conserve bien le mot au lieu de l'amputer
             assert sanitize_string(titre) != ""
             assert len(sanitize_string(titre)) >= len(titre) - 1
+
+
+class TestSiteInsertsItsOwnFilmNumber:
+    """Le libellé du site porte un numéro d'ordre que la fiche du film n'a pas.
+
+    Zone-Téléchargement numérote les films d'une série dans le titre lui-même :
+    TMDB donne « One Piece Film - Strong World » là où le site écrit « One Piece
+    - Film 10 : Strong World », « Naruto Shippuden : Les Liens » contre « Naruto
+    Shippuden - Film 2 : Les Liens ». Ces films remontaient **zéro release**
+    alors que le site les propose.
+
+    La correction retire le numéro puis réapplique les critères existants, sans
+    en assouplir aucun : élargir la comparaison ferait passer les films d'une
+    même série les uns pour les autres, ce qui est le vrai danger sur des
+    collections comme Barbie ou Naruto.
+    """
+
+    @pytest.mark.parametrize("recherche, libelle_du_site", [
+        ("One Piece Film - Strong World", "One Piece - Film 10 : Strong World"),
+        ("One Piece Film - Z", "One Piece - Film 11 : Film Z"),
+        ("One Piece: Heart of Gold", "One Piece SP 11 : Heart of Gold"),
+        ("Naruto Shippuden : Un funeste présage",
+         "Naruto Shippuden - Film 1 : Un Funeste Présage"),
+        ("Naruto Shippuden : Les Liens", "Naruto Shippuden - Film 2 : Les Liens"),
+        ("Naruto Shippuden : La Flamme de la volonté",
+         "Naruto Shippuden - Film 3 : La Flamme de la volonté"),
+        ("Naruto Shippuden : La Prison de Sang",
+         "Naruto Shippuden - Film 5 : La Prison de Sang"),
+        ("Naruto Shippuden : Road to Ninja",
+         "Naruto Shippuden - Film 6 : Road to Ninja"),
+    ])
+    def test_inserted_number_does_not_break_the_match(self, recherche, libelle_du_site):
+        assert matches(recherche, libelle_du_site)
+
+    @pytest.mark.parametrize("recherche, autre_film", [
+        ("One Piece Film - Z", "One Piece - Film 10 : Strong World"),
+        ("Naruto Shippuden : Les Liens", "Naruto Shippuden - Film 6 : Road to Ninja"),
+        ("Naruto Shippuden : La Prison de Sang",
+         "Naruto Shippuden - Film 3 : La Flamme de la volonté"),
+        ("Barbie et le Palais de Diamant", "Barbie - Film 2 : la magie des perles"),
+    ])
+    def test_another_film_of_the_same_series_is_still_rejected(self, recherche, autre_film):
+        assert not matches(recherche, autre_film)
+
+
+class TestOrdinalStripping:
+    """Le retrait ne doit toucher que la numérotation du site."""
+
+    @pytest.mark.parametrize("libelle, attendu", [
+        ("Naruto Shippuden - Film 1 : Un Funeste Présage",
+         "Naruto Shippuden - Un Funeste Présage"),
+        ("One Piece - Film 11 : Film Z", "One Piece - Film Z"),
+        ("One Piece SP 11 : Heart of Gold", "One Piece - Heart of Gold"),
+    ])
+    def test_removes_the_site_numbering(self, libelle, attendu):
+        assert strip_site_film_ordinal(libelle) == attendu
+
+    @pytest.mark.parametrize("libelle", [
+        "Barbie et la porte secrète",
+        "Ne Zha 2",
+        "Comme Cendrillon 3 : Il était une chanson",
+        "Film 4 : sans franchise devant",  # rien avant le numéro : pas un intitulé de série
+    ])
+    def test_leaves_everything_else_untouched(self, libelle):
+        assert strip_site_film_ordinal(libelle) is None

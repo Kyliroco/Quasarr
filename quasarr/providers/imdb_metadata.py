@@ -185,6 +185,58 @@ def get_romaji_title(shared_state, imdb_id):
     return None
 
 
+# Régions dont les titres alternatifs sont en français.
+_FRENCH_REGIONS = {'FR', 'BE', 'CA', 'CH', 'LU'}
+
+
+def get_french_alternative_titles(shared_state, imdb_id, limit=3):
+    """Autres intitulés français du même film, d'après TMDB.
+
+    Zone-Téléchargement n'emploie pas toujours le titre principal de TMDB :
+    « Naruto - Film 1 : Les chroniques ninja de la princesse des neiges » là où
+    TMDB affiche « Naruto et la Princesse des neiges ». Ces variantes-là sont
+    souvent listées telles quelles dans ``alternative_titles``, et Radarr s'en
+    sert lui aussi pour rattacher une release — chercher avec elles produit donc
+    des noms que Radarr saura reconnaître.
+
+    Les interroger coûte une requête paginée par titre : la liste est bornée.
+    """
+    result, media_type = _tmdb_find(imdb_id)
+    if not result:
+        return []
+    tmdb_id = result.get('id')
+    token = _tmdb_token()
+    if not tmdb_id or not token:
+        return []
+
+    kind = 'tv' if media_type == 'tv' else 'movie'
+    url = f'https://api.themoviedb.org/3/{kind}/{tmdb_id}/alternative_titles'
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+    except Exception as e:
+        debug(f"TMDB alternative_titles failed for {imdb_id}: {e}", source="tmdb")
+        return []
+    if r.status_code != 200:
+        return []
+
+    # /tv utilise la clé "results", /movie la clé "titles"
+    items = r.json().get('results') or r.json().get('titles') or []
+    titles = []
+    for item in items:
+        if item.get('iso_3166_1') not in _FRENCH_REGIONS:
+            continue
+        title = (item.get('title') or '').strip()
+        if title and title not in titles:
+            titles.append(title)
+        if len(titles) >= limit:
+            break
+
+    if titles:
+        debug(f"TMDB french alternative titles for {imdb_id}: {titles!r}", source="tmdb")
+    return titles
+
+
 def get_year(shared_state, imdb_id):
     """Année de sortie (int) via TMDB, ou None si indisponible.
 

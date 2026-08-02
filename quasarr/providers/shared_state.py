@@ -662,7 +662,53 @@ def _tokens_in_order(needle_tokens, haystack_tokens):
     return all(token in iterator for token in needle_tokens)
 
 
+# Numéro d'ordre que Zone-Téléchargement intercale dans ses libellés :
+# « Naruto Shippuden - Film 1 : Un Funeste Présage » là où la fiche du film
+# s'appelle « Naruto Shippuden : Un funeste présage », « One Piece SP 11 : Heart
+# of Gold ». Il n'est jamais en tête — la franchise vient avant.
+_SITE_FILM_ORDINAL = re.compile(
+    r"(?<=\S)\s*[-–—]?\s*(?:film|movie|sp|oav|ova)\s*\d+\s*[:：-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_site_film_ordinal(text):
+    """Retire le numéro d'ordre propre au site, s'il y en a un.
+
+    Renvoie None si le titre n'en contient pas. Retirer ce numéro suffit à
+    ramener le libellé du site à celui du film : aucun assouplissement du
+    comparateur n'est nécessaire, les critères existants s'appliquent ensuite
+    tels quels.
+    """
+    if not text:
+        return None
+
+    stripped, count = _SITE_FILM_ORDINAL.subn(" - ", text, count=1)
+    if not count:
+        return None
+
+    stripped = re.sub(r"\s+", " ", stripped).strip(" -–—:")
+    return stripped or None
+
+
 def search_string_in_sanitized_title(search_string, title):
+    if _search_string_in_sanitized_title(search_string, title):
+        return True
+
+    # Seconde tentative sans le numéro d'ordre du site. Les critères ci-dessous
+    # ne bougent pas : « One Piece - Film 10 : Strong World » redevient « One
+    # Piece - Strong World », que le repli « mots du titre présents dans la
+    # recherche » rattrape déjà. C'est plus sûr que d'élargir la comparaison,
+    # qui ferait passer les films d'une même série les uns pour les autres.
+    without_ordinal = strip_site_film_ordinal(title)
+    if without_ordinal and _search_string_in_sanitized_title(search_string, without_ordinal):
+        debug(f"Matched {search_string!r} against {title!r} once its film number was removed")
+        return True
+
+    return False
+
+
+def _search_string_in_sanitized_title(search_string, title):
     sanitized_search_string = sanitize_string(search_string)
     sanitized_title = sanitize_string(title)
 
