@@ -185,6 +185,44 @@ def get_romaji_title(shared_state, imdb_id):
     return None
 
 
+_IDENTITY_CACHE = {}
+
+
+def get_reference_identity(shared_state, imdb_id):
+    """Année, réalisateur et durée de référence, d'après TMDB.
+
+    Zone-Téléchargement n'a pas toujours d'année de production : l'année vient
+    alors du nom de fichier saisi par l'uploadeur, qui se trompe. Ces trois
+    champs permettent de vérifier qu'une autre année désigne bien le même film
+    plutôt qu'un homonyme — la seule condition sous laquelle la proposer.
+
+    Renvoie {'year': str, 'director': str, 'runtime': int|None}.
+    """
+    if imdb_id in _IDENTITY_CACHE:
+        return _IDENTITY_CACHE[imdb_id]
+
+    identity = {"year": "", "director": "", "runtime": None}
+    result, media_type = _tmdb_find(imdb_id)
+    token = _tmdb_token()
+    if result and token and media_type != 'tv':
+        url = f"https://api.themoviedb.org/3/movie/{result.get('id')}"
+        try:
+            r = requests.get(url, headers={'Authorization': f'Bearer {token}'},
+                             params={'append_to_response': 'credits'}, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                identity["year"] = (data.get("release_date") or "")[:4]
+                identity["runtime"] = data.get("runtime")
+                directors = [c.get("name") for c in (data.get("credits") or {}).get("crew", [])
+                             if c.get("job") == "Director" and c.get("name")]
+                identity["director"] = directors[0] if directors else ""
+        except Exception as e:
+            debug(f"TMDB identity failed for {imdb_id}: {e}", source="tmdb")
+
+    _IDENTITY_CACHE[imdb_id] = identity
+    return identity
+
+
 # Régions dont les titres alternatifs sont en français.
 _FRENCH_REGIONS = {'FR', 'BE', 'CA', 'CH', 'LU'}
 
@@ -201,6 +239,20 @@ def get_french_alternative_titles(shared_state, imdb_id, limit=3):
 
     Les interroger coûte une requête paginée par titre : la liste est bornée.
     """
+    if imdb_id in _FRENCH_ALT_CACHE:
+        return _FRENCH_ALT_CACHE[imdb_id]
+
+    titles = _fetch_french_alternative_titles(imdb_id, limit)
+    _FRENCH_ALT_CACHE[imdb_id] = titles
+    return titles
+
+
+# Les titres alternatifs sont stables : une requête par film et par process
+# suffit. Sans ce cache, l'analyse de chaque carte du site en déclencherait une.
+_FRENCH_ALT_CACHE = {}
+
+
+def _fetch_french_alternative_titles(imdb_id, limit):
     result, media_type = _tmdb_find(imdb_id)
     if not result:
         return []

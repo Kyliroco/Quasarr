@@ -19,6 +19,7 @@ import pytest
 
 from quasarr.providers.shared_state import (
     has_non_latin_letters,
+    site_film_ordinal_tail,
     strip_site_film_ordinal,
     sanitize_string,
     search_string_in_sanitized_title as matches,
@@ -275,3 +276,34 @@ class TestOrdinalStripping:
     ])
     def test_leaves_everything_else_untouched(self, libelle):
         assert strip_site_film_ordinal(libelle) is None
+
+
+class TestSiteFranchisePrefix:
+    """Le site préfixe du nom de la série, pas la fiche du film.
+
+    « Naruto - Film 2 : La Légende de la Pierre de Guelel » sur le site, contre
+    « La Légende de la pierre de Guelel » chez Radarr : le préfixe suffit à
+    faire échouer le rapprochement, et ces films restaient introuvables.
+
+    La graphie sans franchise n'est proposée que si elle correspond à un titre
+    que TMDB connaît pour ce film. Sans ce garde-fou on produirait « Strong
+    World » pour « One Piece - Film 10 : Strong World » — générique et inutile.
+    """
+
+    @pytest.mark.parametrize("libelle, attendu", [
+        ("Naruto - Film 2 : La Légende de la Pierre de Guelel",
+         "La Légende de la Pierre de Guelel"),
+        ("Naruto - Film 3 : Mission Spéciale au Pays de la Lune",
+         "Mission Spéciale au Pays de la Lune"),
+        ("One Piece SP 11 : Heart of Gold", "Heart of Gold"),
+    ])
+    def test_extracts_the_part_after_the_number(self, libelle, attendu):
+        assert site_film_ordinal_tail(libelle) == attendu
+
+    @pytest.mark.parametrize("libelle", [
+        "Barbie et la porte secrète",
+        "Comme Cendrillon 3 : Il était une chanson",
+        "Ne Zha 2",
+    ])
+    def test_returns_nothing_without_site_numbering(self, libelle):
+        assert site_film_ordinal_tail(libelle) is None

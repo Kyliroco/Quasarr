@@ -691,6 +691,30 @@ def strip_site_film_ordinal(text):
     return stripped or None
 
 
+def site_film_ordinal_tail(text):
+    """Ce qui suit le numéro d'ordre : le titre propre, sans la franchise.
+
+    Le site préfixe du nom de la série : « Naruto - Film 2 : La Légende de la
+    Pierre de Guelel » alors que la fiche du film s'appelle simplement « La
+    Légende de la pierre de Guelel ». Le préfixe suffit à faire échouer le
+    rapprochement.
+
+    N'est jamais utilisé seul : l'appelant ne retient cette graphie que si elle
+    correspond à un titre que TMDB connaît pour le film cherché. Sans ce
+    garde-fou on produirait des noms génériques — « Strong World » pour « One
+    Piece - Film 10 : Strong World » — qui n'apportent rien.
+    """
+    if not text:
+        return None
+
+    match = _SITE_FILM_ORDINAL.search(text)
+    if not match:
+        return None
+
+    tail = text[match.end():].strip(" -–—:")
+    return tail or None
+
+
 def search_string_in_sanitized_title(search_string, title):
     if _search_string_in_sanitized_title(search_string, title):
         return True

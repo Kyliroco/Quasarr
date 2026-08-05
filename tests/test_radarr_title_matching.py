@@ -146,7 +146,7 @@ class TestBothAnnouncedYearsAreOffered:
         result = self._fetch(monkeypatch,
                              '<html><body><font color="red">Film.2012.DVDRIP</font>'
                              '<p>Année de production : 2011</p></body></html>')
-        production_year, filename_year = result[1], result[-1]
+        production_year, filename_year = result[1], result[8]
         assert production_year == "2011"   # champ de fiche, prioritaire
         assert filename_year == "2012"     # nom de fichier, proposé en second
 
@@ -154,7 +154,7 @@ class TestBothAnnouncedYearsAreOffered:
         result = self._fetch(monkeypatch,
                              '<html><body><font color="red">Film.2014.DVDRIP</font>'
                              '<p>Année de production : 2014</p></body></html>')
-        assert result[1] == result[-1] == "2014"
+        assert result[1] == result[8] == "2014"
 
     def test_filename_year_is_used_when_field_missing(self, monkeypatch):
         result = self._fetch(monkeypatch,

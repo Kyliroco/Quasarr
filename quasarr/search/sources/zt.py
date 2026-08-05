@@ -19,12 +19,14 @@ from bs4 import BeautifulSoup, NavigableString
 from quasarr.providers.imdb_metadata import (
     get_french_alternative_titles,
     get_localized_title,
+    get_reference_identity,
     get_type,
 )
 from quasarr.providers.log import info, debug, warning, error, log_event
 
 from quasarr.providers.shared_state import (
     normalize_localized_season_episode_tags,
+    site_film_ordinal_tail,
     strip_site_film_ordinal,
 )
 
@@ -455,6 +457,39 @@ def _extract_original_title(soup):
     return None
 
 
+_FIELD_STOP = (r"(?=\s{2,}|\s(?:Origine|R.alisation|Acteur|Dur.e|Genre|Ann.e"
+               r"|Date|Qualit.|Langue|Synopsis|Vues)|$)")
+
+
+def _extract_identity(text):
+    """Réalisateur et durée annoncés par la fiche.
+
+    Servent à corroborer une année différente de celle du site : deux films
+    peuvent porter le même nom, seule l'année les distingue, donc on ne retient
+    une autre année que si l'identité du film concorde par ailleurs.
+    """
+    identity = {"director": "", "runtime": None}
+    if not text:
+        return identity
+
+    match = re.search(r"R.alisation[^:]{0,12}:\s*(.{0,70}?)" + _FIELD_STOP, text)
+    if match:
+        identity["director"] = match.group(1).strip()
+
+    match = re.search(r"Dur.e[^:]{0,12}:\s*(.{0,30}?)" + _FIELD_STOP, text)
+    if match:
+        duration = match.group(1)
+        hours = re.search(r"(\d{1,2})\s*h\s*(\d{1,2})", duration)
+        if hours:
+            identity["runtime"] = int(hours.group(1)) * 60 + int(hours.group(2))
+        else:
+            minutes = re.search(r"(\d{2,3})\s*min", duration)
+            if minutes:
+                identity["runtime"] = int(minutes.group(1))
+
+    return identity
+
+
 def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     updated_host = current_host
     production_year = ""
@@ -465,6 +500,9 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
     quality_tokens = []
     available_episodes = set()
     download_entries = []
+    # Identite du film telle que publiee par le site : sert a corroborer une
+    # annee differente de celle qu'il annonce.
+    identity = {"director": "", "runtime": None}
 
     if not source_url:
         return (
@@ -477,6 +515,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             download_entries,
             original_title,
             filename_year,
+            identity,
         )
 
     try:
@@ -494,6 +533,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             download_entries,
             original_title,
             filename_year,
+            identity,
         )
 
     updated_host = _update_hostname(shared_state, current_host, response.url)
@@ -549,6 +589,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
             )
         if title:
             detail_title = title
+        identity.update(_extract_identity(text))
     except Exception as exc:
         debug(f"{hostname.upper()} failed to parse detail page {response.url}: {exc}")
 
@@ -562,6 +603,7 @@ def _fetch_detail_metadata(shared_state, source_url, headers, current_host):
         download_entries,
         original_title,
         filename_year,
+        identity,
     )
 
 
@@ -572,6 +614,64 @@ def _strip_parenthetical_content(text):
     # Remove any parenthetical segments and collapse leftover whitespace.
     stripped = re.sub(r"\s*\([^)]*\)", "", text)
     return re.sub(r"\s+", " ", stripped).strip()
+
+
+# La durée affichée par le site dérive de la référence (générique compris,
+# montage différent) : mesurée à 5 minutes d'écart sur un film dont l'année
+# concorde pourtant. Elle ne sert donc que d'indice, le réalisateur tranche.
+_RUNTIME_TOLERANCE_MINUTES = 12
+
+
+def _same_director(annonce, reference):
+    """Deux graphies du même réalisateur ? (« Dustin Mckenzie » / « McKenzie »)"""
+    if not annonce or not reference:
+        return False
+    annonce = _strip_diacritics(annonce).lower()
+    reference = _strip_diacritics(reference).lower()
+    nom = reference.split()[-1] if reference.split() else ""
+    return bool(nom) and nom in annonce
+
+
+def _corroborated_year(shared_state, imdb_id, identity, annees_du_site):
+    """Année de référence, si la fiche du site confirme que c'est le même film.
+
+    Ne renvoie quelque chose que lorsque l'année de référence diffère de toutes
+    celles annoncées par le site *et* que réalisateur et durée concordent. La
+    release est alors émise dans cette année **en plus** des autres : Radarr
+    retient celle qui correspond à sa fiche, rien n'est jamais remplacé.
+    """
+    if not identity:
+        return ""
+
+    reference = get_reference_identity(shared_state, imdb_id)
+    annee = reference.get("year") or ""
+    if not annee or any(str(annee) == str(a) for a in annees_du_site if a):
+        return ""
+
+    if not _same_director(identity.get("director"), reference.get("director")):
+        return ""
+
+    duree_site, duree_ref = identity.get("runtime"), reference.get("runtime")
+    if not duree_site or not duree_ref:
+        return ""
+    if abs(duree_site - duree_ref) > _RUNTIME_TOLERANCE_MINUTES:
+        return ""
+
+    debug(f"{hostname.upper()} year {annee} corroborated for {imdb_id} "
+          f"(director {reference.get('director')!r}, runtime {duree_ref})")
+    return str(annee)
+
+
+def _known_titles(shared_state, imdb_id):
+    """Tous les intitulés sous lesquels TMDB connaît ce film, en français.
+
+    Sert de garde-fou : une graphie n'est proposée à Radarr que si elle
+    correspond à l'un d'eux. Les deux appels sont mis en cache par process.
+    """
+    localized, original = get_localized_title(shared_state, imdb_id, 'fr', True)
+    titles = [t for t in (localized, original) if t]
+    titles.extend(get_french_alternative_titles(shared_state, imdb_id))
+    return titles
 
 
 def _strip_diacritics(text):
@@ -1051,6 +1151,7 @@ def _parse_results(shared_state,
             detail_available_episodes = set()
             detail_download_entries = []
             detail_filename_year = ""
+            detail_identity = {}
 
             if headers is not None:
                 if source not in metadata_cache:
@@ -1070,6 +1171,7 @@ def _parse_results(shared_state,
                     detail_download_entries,
                     detail_original_title,
                     detail_filename_year,
+                    detail_identity,
                 ) = metadata_cache[source]
                 if updated_host:
                     current_host = updated_host
@@ -1204,12 +1306,48 @@ def _parse_results(shared_state,
 
             sans_numero = strip_site_film_ordinal(title_source)
 
+            # Le site préfixe aussi du nom de la franchise : « Naruto - Film 2 :
+            # La Légende de la Pierre de Guelel » alors que la fiche du film
+            # s'appelle « La Légende de la pierre de Guelel ». On ne retient
+            # cette graphie que si elle correspond à un titre connu de TMDB pour
+            # ce film — sinon on produirait « Strong World » tout court, générique
+            # et sans usage.
+            sans_franchise = None
+            if imdb_id:
+                candidat = site_film_ordinal_tail(title_source)
+                # Comparaison sans accents : le site écrit « La Legende de la
+                # Pierre de Guelel » là où TMDB accentue « La Légende de la
+                # pierre de Guelel ». C'est le même titre.
+                if candidat and any(
+                    _titles_equivalent(_strip_diacritics(candidat), _strip_diacritics(connu))
+                    for connu in _known_titles(shared_state, imdb_id)
+                ):
+                    sans_franchise = candidat
+
+            # Le site n'a pas toujours de champ « Année de production » : l'année
+            # vient alors du nom de fichier de l'uploadeur, qui se trompe — 2013
+            # pour « One Piece Film Z » sorti en 2012. On propose l'année de
+            # référence en plus, mais seulement si la fiche prouve qu'il s'agit
+            # bien du même film : deux homonymes ne se distinguent que par
+            # l'année, et en importer un pour l'autre serait pire que de ne rien
+            # trouver.
+            annee_corroboree = ""
+            if imdb_id and not request_is_sonarr:
+                annee_corroboree = _corroborated_year(
+                    shared_state, imdb_id, detail_identity,
+                    (release_year, alternate_year),
+                )
+
             if alternate_year:
                 _ajouter_variante(title_source, alternate_year)
-            if sans_numero:
-                _ajouter_variante(sans_numero, release_year)
-                if alternate_year:
-                    _ajouter_variante(sans_numero, alternate_year)
+            if annee_corroboree:
+                _ajouter_variante(title_source, annee_corroboree)
+            for source in (sans_numero, sans_franchise):
+                if not source:
+                    continue
+                for annee in (release_year, alternate_year, annee_corroboree):
+                    if annee:
+                        _ajouter_variante(source, annee)
 
             stripped_title_source = _strip_parenthetical_content(title_source)
             stripped_final_title_base = None
