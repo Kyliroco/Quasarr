@@ -701,7 +701,7 @@ class TestFetchDetailMetadataArity:
     page de détail échouait (timeout réseau) disparaissait silencieusement.
     """
 
-    EXPECTED_FIELDS = 9
+    EXPECTED_FIELDS = 10
 
     def test_empty_url_returns_full_tuple(self):
         ss = MockSharedState()
@@ -723,6 +723,9 @@ class TestFetchDetailMetadataArity:
         )
         # Déballage identique à celui de _parse_results : ne doit pas lever.
         (host, year, size_mb, title, quality_tokens,
-         episodes, entries, original_title, filename_year) = result
+         episodes, entries, original_title, filename_year, identity) = result
         assert host == "host"
         assert entries == []
+        # L'identité doit exister même sur le chemin d'erreur : la corroboration
+        # d'année la lit sans vérifier au préalable.
+        assert identity == {"director": "", "runtime": None}
